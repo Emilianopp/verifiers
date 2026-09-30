@@ -9,7 +9,10 @@
         "architecture",
         "tasksets",
         "evaluation",
+        "runtimes",
+        "debugging",
         "harnesses",
+        "agent",
         "env",
         "harbor",
         "gepa"
