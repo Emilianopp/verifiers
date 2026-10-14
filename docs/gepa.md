@@ -11,9 +11,6 @@ uv run vf-gepa reverse-text
 prompts, then evaluates those prompts. It changes `TaskData.system_prompt`, not
 the model's weights.
 
-The [gepa skill](../../skills/gepa/SKILL.md) covers the full workflow, including
-task selection, budgets, and comparison on tasks not used during optimization.
-
 GEPA uses the same `env`, `client`, and `sampling` settings as evaluation:
 
 ```toml

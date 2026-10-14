@@ -25,19 +25,19 @@ This dry run does not call a model. The [bundled evaluation reference](evaluatio
 describes `vf-eval`'s settings and output files. Prime-RL has its own run config,
 resume behavior, and output layout; use its guide for those runs.
 
-Create new packages with `uv run vf-init <name>` and install them with
-`uv pip install -e environments/<package_dir>`. Other tasksets must also be
-installed before `vf-eval` can load their IDs. Harbor needs Python 3.12+ and the
+Follow [building environments](building-environments.md#create-a-package) to
+create a package, then install it with `uv pip install -e environments/<package_dir>`.
+Other tasksets must also be installed before `vf-eval` can load their IDs.
+Harbor needs Python 3.12+ and the
 `harbor` extra (`uv sync --extra harbor` in this checkout).
 
 ## Commands
 
-Verifiers installs these six commands. Run them with `uv run` in the environment
+Verifiers installs these five commands. Run them with `uv run` in the environment
 where Verifiers and the taskset package are installed.
 
 | Command | Use |
 | --- | --- |
-| [`vf-init <name>`](building-environments.md#create-a-package) | Scaffold an environment package; add `-T` for tools or `-H` for a harness |
 | [`vf-validate <taskset>`](debugging.md#before-running-an-agent) | Check setup, a known solution, or the untouched task |
 | [`vf-debug <taskset>`](debugging.md#before-running-an-agent) | Run a command or script inside the prepared task runtime |
 | [`vf-replay <run-dir>`](debugging.md#re-score-without-rerunning-the-agent) | Re-score saved `vf-eval` traces; cannot recreate their sandbox |
@@ -51,4 +51,5 @@ reading evaluation help so their options appear. Validation and debugging use
 
 ## Skills
 
-The repository's [`skills/`](../../skills) and [`AGENTS.md`](../../AGENTS.md) give coding agents instructions for building, evaluating, and debugging environments. These docs explain the same features for people.
+The [release skill](../skills/release/SKILL.md) covers stable releases.
+[`AGENTS.md`](../AGENTS.md) contains repository instructions for coding agents.

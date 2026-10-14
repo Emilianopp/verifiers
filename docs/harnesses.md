@@ -91,7 +91,7 @@ Capability flags describe behavior you must implement:
 - `APPENDS_SYSTEM_PROMPT`: pass the system prompt as a system message. Otherwise, it is added to the first user message.
 
 For an ACP program, reuse `vf.ACPHarness` in
-[`acp/__init__.py`](../../verifiers/v1/acp/__init__.py).
+[`acp/__init__.py`](../verifiers/v1/acp/__init__.py).
 
 Live steering requires a harness session that implements `steer`. Conversation
 resume support alone does not provide it; see [message delivery](agent.md#messages-during-an-active-turn).

@@ -25,12 +25,14 @@ use the agent's existing filesystem or a fresh sandbox. The
 ## Create a package
 
 ```bash
-uv run vf-init file-sum-v1
+uv init --lib --build-backend hatch --no-workspace --python '>=3.11' environments/file_sum_v1
+uv add --project environments/file_sum_v1 --editable "$PWD"
 ```
 
-The scaffold creates `environments/file_sum_v1/` with a `pyproject.toml` and a
-`file_sum_v1` Python package. Put task data, hooks, and scoring in `taskset.py`.
-Export the taskset and, when needed, an environment from `__init__.py`.
+Run these commands from the Verifiers checkout. They create a package with its
+own `pyproject.toml` and an editable dependency on this checkout. Put task data,
+hooks, and scoring in `environments/file_sum_v1/src/file_sum_v1/taskset.py`.
+Export the taskset and, when needed, an environment from the package's `__init__.py`.
 
 Keep dataset choices on `TasksetConfig`, task settings on `TaskConfig`, and saved
 per-task values on `TaskData`. Implement `Taskset.load()`, not `__init__`. See
@@ -102,7 +104,7 @@ sequenceDiagram
     E->>G: Remove sandbox
 ```
 
-For example, replace the scaffold's `taskset.py` with:
+For example, create `src/file_sum_v1/taskset.py` inside the package:
 
 ```python
 import verifiers.v1 as vf
@@ -147,7 +149,7 @@ The empty answer file makes an untouched task score zero. `setup` runs in both
 sandboxes; restoring the solver's output replaces that empty file in the grader.
 The gold check writes a known answer and uses the same reward method.
 
-Select the environment by exporting it in `file_sum_v1/__init__.py`:
+Select the environment by exporting it in `src/file_sum_v1/__init__.py`:
 
 ```python
 from verifiers.v1.envs.isolated_verifier import IsolatedVerifierEnv
@@ -164,7 +166,7 @@ runtime. Harbor packages should export `HarborEnv` and use Harbor's
 
 ### Choose a different grading runtime or image
 
-Save an evaluation config such as `configs/file-sum.toml`:
+Save an evaluation config as `file-sum.toml`:
 
 ```toml
 model = "z-ai/glm-5.2"
@@ -249,12 +251,12 @@ attempts). A returned zero reward is a completed grade, not a retryable failure.
 
 | Need | Use |
 | --- | --- |
-| Extra task-specific tools | Scaffold with `vf-init -T`; configure their runtime or set `colocated = true` to share the agent sandbox |
+| Extra task-specific tools | Define a `vf.Toolset`; configure its runtime or set `colocated = true` to share the agent sandbox |
 | Several attempts or a model judge | `best-of-n`, `agentic-judge`, or `shared-agentic-judge` |
 | A model playing the user | `user-sim` |
 | A game or scripted follow-up messages | A custom `Env.run()` driving `agents.<role>.interaction(task)` |
 | Several services, such as an app and database | A Harbor task with Compose and `HarborEnv` |
-| A different agent program | A built-in harness, or `vf-init -H` for a custom one |
+| A different agent program | A built-in harness, or a custom `vf.Harness` |
 
 See [environment control flow](env.md#custom-control-flow),
 [task tools](tasksets.md#adding-tools), and [harnesses](harnesses.md). A custom
@@ -267,9 +269,9 @@ Install the package in the CLI's Python environment, then check it:
 
 ```bash
 uv pip install -e environments/file_sum_v1
-uv run vf-eval @ configs/file-sum.toml --dry-run
+uv run vf-eval @ file-sum.toml --dry-run
 uv run vf-validate file-sum-v1 --runtime.type docker -n 1
-uv run vf-eval @ configs/file-sum.toml -n 1 -r 1 -c 1 --no-push
+uv run vf-eval @ file-sum.toml -n 1 -r 1 -c 1 --no-push
 ```
 
 For this example, validation checks that the gold answer passes and the untouched

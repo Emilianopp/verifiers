@@ -5,25 +5,14 @@ A taskset loads tasks and defines how to score them.
 For a complete package with separate agent and grading sandboxes, start with
 [building environments](building-environments.md).
 
-Create a package with:
-
-```bash
-uv run vf-init addition-v1
-```
-
-The generated package has two important files:
+Follow the [package setup](building-environments.md#create-a-package) with
+`addition_v1` as the package name, then add these two files:
 
 ```text
-environments/addition_v1/addition_v1/
+environments/addition_v1/src/addition_v1/
 ├── __init__.py  # exports the taskset entry point
 └── taskset.py   # defines the data, tasks, and taskset
 ```
-
-The command also supports:
-
-- `-p`, `--path <dir>` — choose the parent directory (default: `./environments`).
-- `-T`, `--add-tool` — add a `vf.Toolset` server at `servers/tool.py` for custom MCP tools.
-- `-H`, `--add-harness` — add a `vf.Harness` at `harness.py`. Select it with `--env.agent.harness.id <name>`. Use a built-in harness unless you need a custom program.
 
 Install the package in the Python environment running the CLI:
 
@@ -80,7 +69,7 @@ class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
 Only add a config class when users need custom settings. This example adds
 `num_tasks` to the taskset config and uses the base task config.
 
-The scaffold also exports the taskset from `addition_v1/__init__.py`:
+Export the taskset from `src/addition_v1/__init__.py`:
 
 ```python
 from addition_v1.taskset import AdditionTaskset
@@ -328,7 +317,7 @@ Examples include `alphabet_sort`, `color_codeword`, and `textarena`.
 Use `vf.Toolset` for tools the task needs beyond those built into the harness.
 Tools are served through MCP, so the harness must declare `SUPPORTS_MCP`.
 
-Start with `uv run vf-init MY_ENV -T`. For example:
+For example:
 
 ```python
 DATABASE = None
@@ -363,7 +352,7 @@ config. Choose where the server runs:
 - `url = "https://.../mcp"`: connect to an existing streamable-HTTP MCP service.
 
 A local server module must call `SearchToolset.run()` under
-`if __name__ == "__main__":`; `vf-init -T` includes this. Use `setup()` to prepare
+`if __name__ == "__main__":`. Use `setup()` to prepare
 the server and `setup_task(task)` to receive task data in a server created per task.
 
 `Toolset[Config, State]` gives tools access to rollout state through `self.state`.
@@ -403,7 +392,7 @@ class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
         return float(trace.state.calls)
 ```
 
-Put the toolset and its `run()` entry point in the scaffold's server module.
+Put the toolset and its `run()` entry point in a server module in your package.
 Initialize per-rollout values in the task's `setup` through `trace.state`.
 Server `setup_task(task)` receives `TaskData`, not a `Task` or `Trace`; use it
 for fixed inputs such as a source page or service address. State synchronization
@@ -572,8 +561,8 @@ Use `TaskData` for ordinary network restrictions. To reject a tool call before
 it runs and then let the agent continue, the harness needs
 `SUPPORTS_TOOL_INTERCEPTION` and code that checks tool calls before execution.
 Without that support, the run must stop.
-See the bundled [interception](../../environments/interception/interception/taskset.py)
-and [bash interception](../../environments/bash_interception/bash_interception/taskset.py)
+See the bundled [interception](../environments/interception/interception/taskset.py)
+and [bash interception](../environments/bash_interception/bash_interception/taskset.py)
 examples for working hooks.
 
 ## Beyond one agent
