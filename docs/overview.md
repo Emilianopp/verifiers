@@ -34,7 +34,7 @@ A trace records the agent's messages, tool calls, scores, and errors. It also re
 
 ## Documentation
 
-- [Getting started](getting_started.md) - How to install verifiers and the needed skills.
+- [Getting started](getting_started.md) — Installation, CLI commands, and skills
 - [Architecture](architecture.md) — How verifiers works behind-the-scenes
 - [Building environments](building-environments.md) — Build a package and separate agent execution from grading
 - [Tasksets](tasksets.md) — How to create tasksets

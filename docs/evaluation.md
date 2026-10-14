@@ -1,6 +1,13 @@
 # Evaluation
 
-To evaluate an installed taskset, use `vf-eval`:
+For new model evaluations, use [Prime-RL's `uv run eval`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/eval.md)
+from a Prime-RL installation. `vf-eval` remains available, but tells users it
+will be deprecated and directs them to that runner.
+
+This page describes the bundled `vf-eval` CLI, its config, and its output files.
+Prime-RL's config and resume instructions are in its own guide.
+
+To run an installed taskset with `vf-eval`:
 
 ```bash
 uv run vf-eval primeintellect/terminal-bench-2
