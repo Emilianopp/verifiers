@@ -31,6 +31,10 @@ Without an `--only-*` flag, gold and noop checks run in separate runtimes.
 its execution network restrictions. The noop check includes configured judges,
 so it can call models.
 
+Validation also skips the environment, artifact transfer, and `stage_verifier`.
+If a gold check needs private tests, call staging from `validate`. Check the full
+isolated-grading lifecycle with an evaluation; validation alone cannot cover it.
+
 Validation writes `results.jsonl`, `summary.json`, `logs/validate.log`, and
 `configs/resolved/validate.json`. Resume missing, errored, or timed-out checks with:
 

@@ -12,24 +12,25 @@ parameter to read files or run commands in the sandbox. A plain
 These are the features exposed by the Verifiers runtime adapters. All runtimes
 support commands, file reads and writes, background services, and live processes.
 
-| Capability | `subprocess` | `docker` | `podman` | `apptainer` | `prime` | `modal` |
-| --- | --- | --- | --- | --- | --- | --- |
-| Runs on | Evaluator host | Local container engine | Local container engine | Apptainer host | Remote sandbox | Remote sandbox |
-| Task image and container-required tasks | No | Yes | Yes | Yes | Yes | Yes |
-| `cpu` / `memory` settings | No | Yes | Yes | Yes | Yes | Yes |
-| Enforced `disk` size | No | No | No | No | Yes | No |
-| GPU selection | No setting | Count; checks requested type | NVIDIA CDI device count | All accessible NVIDIA GPUs | Type and count | Type and count; no GPUs with `vm = true` |
-| Execution-time allowlist | No | Yes | Yes | No | Hosts | HTTPS domains on port 443 |
-| Execution-time deny list | No | Yes | Yes | No | Hosts | No |
-| Framework-only networking (`allow = []`) | No | Yes | Yes | No | Yes | Yes |
-| Artifact transfer and isolated grading | No | Yes | Yes | Yes | Yes | Yes |
-| Harbor Docker Compose | No | Yes, with conditions below | No | No | Yes, in a VM | Yes, in an experimental VM |
+| Capability | `subprocess` | `docker` | `podman` | `apptainer` | `prime` | `modal` | `e2b` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Runs on | Evaluator host | Local container engine | Local container engine | Apptainer host | Remote sandbox | Remote sandbox | Remote sandbox |
+| Task image and container-required tasks | No | Yes | Yes | Yes | Yes | Yes | Public Debian-based image |
+| `cpu` / `memory` settings | No | Yes | Yes | Yes | Yes | Yes | Yes; template limits below |
+| Enforced `disk` size | No | No | No | No | Yes | No | No |
+| GPU selection | No setting | Count; checks requested type | NVIDIA CDI device count | All accessible NVIDIA GPUs | Type and count | Type and count; no GPUs with `vm = true` | No setting |
+| Execution-time allowlist | No | Yes | Yes | No | Hosts | HTTPS domains on port 443 | Hosts, IPs, CIDRs |
+| Execution-time deny list | No | Yes | Yes | No | Hosts | No | IPs and CIDRs |
+| Framework-only networking (`allow = []`) | No | Yes | Yes | No | Yes | Yes | Yes |
+| `TaskData.agent_user` | No | Yes | Yes | No | Yes | No | No |
+| Artifact transfer and isolated grading | No | Yes | Yes | Yes | Yes | Yes | Yes |
+| Harbor Docker Compose | No | Yes, with conditions below | No | No | Yes, in a VM | Yes, in an experimental VM | No |
 
 Local CPU, memory, and GPU settings require support from the host and container
 engine. Docker GPU selection needs the NVIDIA container toolkit; Podman needs
 NVIDIA CDI devices. Apptainer passes CPU and memory flags to its CLI, and `gpu`
-enables `--nv`; its GPU count and type are not enforced. Local containers and
-Modal accept `disk` as an advisory request.
+enables `--nv`; its GPU count and type are not enforced. Local containers,
+Modal, and E2B accept `disk` as an advisory request.
 
 `subprocess` can access the evaluator's files, processes, devices, and network.
 Apptainer also shares the host network. Tasks that require network restrictions
@@ -39,6 +40,14 @@ with a compatible harness, such as `bash` or `null`.
 Modal requires the `modal` extra and Modal credentials. Its ordinary sandboxes
 support GPU requests; its VM backend is CPU-only. Prime uses Prime credentials.
 GPU availability depends on the provider or host.
+
+E2B requires the `e2b` extra and E2B credentials. It builds and caches a template
+from the public Debian-based image, CPU count, and memory setting. CPU must be
+one or an even whole number; memory must be at least 0.125 GB and convert to an
+even whole number of MB. The adapter requests a 24-hour sandbox lifetime, so
+the account must allow that duration. E2B allow rules accept wildcard hosts,
+IPs, and CIDRs, but no URL schemes, ports, or paths. Block rules accept only
+IPs and CIDRs.
 
 [Harbor Compose](harbor.md#docker-compose) supports CPU tasks on Docker, Prime,
 and Modal. Local Docker requires unrestricted networking and `--env.trust-compose`.
@@ -73,7 +82,11 @@ used when the corresponding runtime settings are still at their defaults.
 Non-default runtime settings win for those fields.
 
 CPU is in cores, memory and disk in GB, and timeouts in seconds. Prime enforces
-disk limits; local containers and Modal treat them as requests only.
+disk limits; local containers, Modal, and E2B treat them as requests only.
+
+On Prime, `runtime.checkpoint` starts from an existing durable filesystem
+checkpoint. It replaces the image, including a task's image override, and keeps
+the checkpoint's disk size. CPU and memory settings still apply.
 
 Limits under `env.agent` apply to each agent rollout: `max_turns`,
 `max_input_tokens`, `max_output_tokens`, and `max_total_tokens`.
@@ -83,6 +96,20 @@ between turns, so the turn that exceeds a limit can finish.
 Under `env.agent.timeout`, set `setup`, `rollout`, `finalize`, or `scoring` to
 override the task's timeouts. Unset values use the task's timeout, or no limit
 if the task has none. Explicit timeouts must be greater than zero.
+
+## Execution users
+
+Set `TaskData.agent_user` to an existing account in the image on Docker, Podman,
+or Prime. Its home directory must be writable. Task setup runs as the runtime's
+default user, then harness setup, the agent program, and colocated task tools
+run as `agent_user`. Finalization, scoring, and artifact collection use the
+runtime's default user. Other runtimes reject `agent_user`.
+
+Prepare system dependencies during image creation or task setup. Files created
+there keep their ownership: give the agent permission to read its inputs and
+write its workdir and outputs. Selecting a user does not create an account or
+change file ownership. Use a fresh [grading sandbox](building-environments.md#separate-agent-and-grading-sandboxes)
+when private tests must stay outside the agent's runtime.
 
 ## Runtime operations
 
@@ -181,10 +208,16 @@ allow = ["*"]
 block = ["huggingface.co", "*.huggingface.co"]
 ```
 
-Task and harness setup runs before restrictions start. The restrictions then
-remain active through finalization and scoring. They apply inside the runtime,
-not to Python hooks on the evaluator or tools in a separate runtime. Set
+Task and harness setup runs before restrictions start. The restrictions normally
+remain active through finalization and scoring. Harbor's shared verifier
+[reopens the network for grading](harbor.md#network-policies). Policies apply
+inside the runtime, not to Python hooks on the evaluator or tools in a separate runtime. Set
 `colocated = true` for a task tool to share the agent's files and network rules.
+
+Restricted runs add a notice to the agent's system prompt (or first user message
+when the harness cannot append a system message). Set
+`--no-env.agent.network-notice` to omit this notice when the benchmark requires
+an exact prompt. This does not change the network policy.
 
 Provider-hosted tools run outside the sandbox. Verifiers passes supported
 restrictions to web tools or disables tools it cannot restrict; see

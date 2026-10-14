@@ -29,6 +29,8 @@ class TerminalBench2Taskset(
 
 `dataset` accepts a Harbor Hub ID such as `org/name@ref`. Pin a tag, revision, or
 digest to keep the dataset fixed. Use `tasks` to select task names.
+For registry datasets, use a bare `name@version` with `repo`, `registry_path`, or
+`registry_url` to select the registry. These settings belong under `env.taskset`.
 
 Export both the taskset and `HarborEnv` in the package's `__init__.py`:
 
@@ -123,6 +125,10 @@ resource_multiplier = 2.0
 `resource_multiplier` scales CPU, memory, and disk requests regardless of the
 timeout setting.
 
+Harbor's `[agent].user` becomes `TaskData.agent_user`. The account must exist
+in the image and have a writable home; see [execution users](runtimes.md#execution-users).
+`[verifier].user` and collect-hook `user` settings are rejected.
+
 ## Rewards
 
 `reward.json` takes precedence over `reward.txt`. An existing JSON file must contain
@@ -198,9 +204,16 @@ Harbor also reads `[environment].allow_internet` through its schema.
 | `no-network` | `network_allow = []`; only framework connections are allowed |
 | `allowlist` | `network_allow = allowed_hosts` |
 
-Task and harness setup runs before restrictions start. Restrictions then remain
-active through finalization and scoring. Model and MCP connections are added
-when using an allowlist or framework-only access.
+Task and harness setup runs before restrictions start. Model and MCP connections
+are added when using an allowlist or framework-only access. Agent restrictions
+remain active through finalization and artifact collection.
+
+Shared grading reopens network access before staging and running the tests,
+including when the agent runtime has an allowlist or blocklist. It does not
+apply a separate `[verifier].network_mode`. Separate grading prepares a fresh
+runtime, then applies the verifier's policy combined with its runtime policy.
+Without an explicit verifier policy, it uses the resolved verifier environment's
+baseline policy.
 
 When both the task and runtime set allowlists, only destinations allowed by both
 remain. Blocklists combine. An empty allowlist takes precedence. A nonempty
@@ -232,6 +245,8 @@ service's tools and schemas without requiring task-specific tool code.
 Declare outputs in `artifacts = [...]` and `[[verifier.collect]]` in `task.toml`.
 See the [Harbor artifact docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts).
 Each entry's `service` chooses where to collect it; the default is `main`.
+Missing Harbor artifacts are optional during collection, so tests must reject
+missing required outputs. Native `vf.Artifact` declarations default to required.
 
 Main's hooks and artifacts are collected during `finalize`. For separate
 verification, `HarborEnv` then stops main and collects sidecar outputs. A shared
@@ -260,8 +275,10 @@ Set `[verifier].environment_mode = "separate"` to grade in a fresh container.
 3. Start a fresh verifier runtime, restore the artifacts, and prepare the tests.
 4. Run the tests and add their rewards and metrics to the solver's trace.
 
-The verifier uses the solver's resolved runtime settings unless overridden with
-`--env.verifier.runtime.*`. Failures during setup, file restoration, test
+The verifier starts from the agent runtime config unless overridden with
+`--env.verifier.runtime.*`. Its image and declared resources, workdir, and network
+policy are then resolved from the Harbor task. The task's verifier image takes
+precedence over the runtime image. Failures during setup, file restoration, test
 preparation, or scoring retry according to `--env.verifier.retries`.
 
 The same [reward-file precedence and key selection](#rewards) applies to both
@@ -284,6 +301,6 @@ solver's container and removes that isolation.
 ## Limitations
 
 - Outside Compose, image entrypoints are replaced with a process that keeps the container alive. Start required services during setup; health checks cannot rely on the original entrypoint.
-- A shared verifier cannot switch to a different [network policy](https://www.harborframework.com/docs/tasks/network-policy). A separate verifier can use its own policy.
+- Shared grading reopens network access; use separate verification when the grader needs its own restricted policy.
 - Verifier images must be built and published in advance.
 - [Multi-step tasks](https://www.harborframework.com/docs/tasks/multi-step) are unsupported.

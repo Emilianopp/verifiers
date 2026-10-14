@@ -9,6 +9,25 @@ harness's settings. Most third-party harnesses require a container. Check suppor
 for each feature you need: MCP tools, follow-up messages, image input, and skills
 are separate features.
 
+## Bash harness
+
+`bash` supports shell commands, editing, MCP tools, conversation resume, and
+tool interception. It can run on `subprocess` for trusted local work, or in a
+container. It does not support harness skills.
+
+Context compaction is enabled by default. When the provider reports the context
+window, automatic compaction starts when about 16,000 tokens remain.
+Set a fixed threshold when needed:
+
+```toml
+[env.agent.harness]
+id = "bash"
+compaction = { summarize_at_tokens = 100000 }
+```
+
+Set `compaction = "None"` to disable it. Search is off by default; enabling
+`search = true` requires `SERPER_API_KEY` on the evaluator.
+
 ## A minimal harness implementation
 
 ```python
@@ -60,6 +79,8 @@ Replace the placeholder binary, installation command, and environment variable
 names with those your program uses. Every model call must use the supplied
 `endpoint` and `secret` so verifiers can record it. Include
 `self.config.resolved_env` to support credentials passed through `forward_env`.
+When the task sets `agent_user`, harness setup uses that user too. Install into
+writable paths and leave system package installation to the image or task setup.
 
 Capability flags describe behavior you must implement:
 
@@ -71,6 +92,9 @@ Capability flags describe behavior you must implement:
 
 For an ACP program, reuse `vf.ACPHarness` in
 [`acp/__init__.py`](../../verifiers/v1/acp/__init__.py).
+
+Live steering requires a harness session that implements `steer`. Conversation
+resume support alone does not provide it; see [message delivery](agent.md#messages-during-an-active-turn).
 
 Return the main program's `ProgramResult`; verifiers builds the trace. If the
 harness creates files or sessions outside the temporary runtime, remove them in

@@ -69,6 +69,18 @@ version before adapting them; use the APIs documented here for this version.
 | Tool state used by task scoring | [Wikispeedia](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/reasoning/wikispeedia) | [Stateful tools](tasksets.md#stateful-tools) |
 | Harness defaults selected by task settings | [HLE-Diamond](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/knowledge/hle_diamond) | [Role defaults](env.md#role-defaults) |
 | Scripted user messages in one rollout | [BFCL v3](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/tool_use/bfcl_v3), [SciCode](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/code/scicode) | [Scripted conversations](env.md#scripted-conversations) |
+| Private grading shared by several tasksets | [Lean common](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/packages/lean_common) | [Private tests](#transfer-outputs-and-prepare-private-tests) |
+| A tool calling an external evaluation service | [PTX remote](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/code/ptx_remote) | [Stateful tools](tasksets.md#stateful-tools) |
+
+A remote service is a separate execution boundary. Its GPU, files, and network
+access are managed by that service, not by the agent runtime. Save its result
+in rollout state for scoring, then copy evidence needed after the run into
+`trace.info`.
+
+If a task sets `agent_user`, setup still uses the runtime's default user. Make
+the workdir and output paths writable by the named account before the harness
+starts. See [execution users](runtimes.md#execution-users) for supported backends
+and which lifecycle stages use that account.
 
 ## Separate agent and grading sandboxes
 
@@ -197,6 +209,10 @@ contents under each declared root. Keep these roots separate from trusted tests
 and grader dependencies. A missing required artifact fails the rollout; use
 `vf.Artifact(source=..., required=False)` for an optional output and handle its
 absence in scoring. Directory artifacts can use `exclude` patterns.
+
+Transfer ordinary files and directories. Confined links are supported; links
+that escape an artifact root or traverse other symlinks are rejected. FIFO and
+device nodes are omitted from collected archives.
 
 `/logs/artifacts` is collected automatically when present. The total archive
 limit is 32 MiB by default, controlled by `TaskData.artifact_max_bytes`. Archives

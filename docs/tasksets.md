@@ -204,7 +204,7 @@ This task's prompt should name both paths and say that either the answer file or
 the final reply is accepted. Use `runtime.read` directly when the benchmark
 requires a file; a fallback would change its scoring rules. Save small parsed
 results or judge verdicts in `trace.info` for reuse, with distinct keys for your
-own values. Custom judge calls already write request records under `info["judge"]`.
+own values. Custom judge calls already write request records under `info["judge_calls"]`.
 
 With isolated verification, `finalize` still runs in the solver sandbox. Use it
 to capture evidence; keep checks that need private tests or a clean filesystem
@@ -246,8 +246,11 @@ Both are optional.
 
 A task's `hash` is computed from its data. Its `key` identifies the task across
 runs and defaults to the hash. If fields such as `idx` change between runs,
-override `Task.key` with a stable ID from the dataset. Keys must be unique within
-a taskset. Traces record both values.
+override `Task.key` with a stable ID from the dataset. Use distinct keys for
+distinct tasks. Traces record both values.
+
+Evaluation resume matches task hashes, including repeated occurrences of the
+same hash. Overriding the key does not make changed task data resume-compatible.
 
 ## Selecting tasks
 
@@ -437,6 +440,23 @@ best for each criterion. It reads the full trace by default, records each
 criterion as a metric, and returns their weighted average. Give each judge a
 different reward `name`.
 
+The `decision` judge uses a decision-model endpoint to score ordered levels:
+
+```toml
+[[env.taskset.task.judges]]
+id = "decision"
+name = "correct"
+answer_field = "answer"
+levels = ["Incorrect", "Correct"]
+```
+
+It defaults to `typesafe-ai/jev` at Prime's evaluations endpoint. Supply two to
+ten levels, ordered worst to best. Its reward is the probability-weighted level,
+normalized to 0–1; with two levels, this is the probability of correctness,
+not a thresholded pass/fail verdict. `answer_field` is optional. `base_url` must
+be the full evaluation URL. Generation sampling settings do not apply to this
+API.
+
 Every judge has its **own** `model`, `base_url`, `api_key_var`, and `sampling`.
 Changing the evaluation's model or client does not change the judge. Set the
 judge's endpoint explicitly if needed. Pass `trace=trace` to custom judge calls
@@ -467,7 +487,7 @@ class JudgedData(vf.TaskData):
 
 class JudgedTaskConfig(vf.TaskConfig):
     # Judge endpoint settings are independent of the evaluated agent's client.
-    judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
+    judge: vf.JudgeConfig = vf.JudgeConfig()
 
 
 class JudgedTask(vf.Task[JudgedData, vf.State, JudgedTaskConfig]):

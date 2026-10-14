@@ -67,6 +67,36 @@ The endpoint must support the API used by the harness. Each agent can override
 `env.<agent>`. Task judges have independent client settings; see
 [judges](tasksets.md#using-judges).
 
+For extra headers containing secrets, map header names to environment variables:
+
+```toml
+[client.headers_from_env]
+"X-Project-Token" = "PROJECT_TOKEN"
+
+[client.timeout]
+connect = 30
+read = 300
+```
+
+These values are read when the client is built and override matching static
+`client.headers`, ignoring header-name case. Static header values are saved in
+the resolved config. HTTP timeouts are in seconds: `connect` defaults to 30;
+`read`, `write`, and `pool` have no limit by default. `read` limits the gap
+between received bytes, not the duration of the whole response. Use agent
+stage timeouts to bound a rollout.
+
+## Sampling settings
+
+Set shared sampling under `[sampling]` and per-agent overrides under
+`[env.<agent>.sampling]`. Overrides merge by field, so setting an agent's
+temperature keeps the shared token limit and provider options. An explicit
+Python `None` or JSON `null` clears an inherited field.
+
+Provider-specific options can be set alongside `temperature`, `top_p`,
+`reasoning_effort`, and `max_tokens`. Options inside `extra_body` are also
+accepted; a value outside `extra_body` wins if both set the same option.
+`max_completion_tokens` is an alias for `max_tokens`.
+
 ## Common config values
 
 - `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
@@ -100,6 +130,11 @@ Keep the installed taskset, code, and dataset versions fixed too. Tasks are
 matched by a hash of their data; matching config alone does not ensure matching
 datasets. `--clean` deletes the selected run directory. Use a new directory to
 keep the previous results.
+
+When identical task data appears more than once, completed episodes fill each
+occurrence's `num_rollouts` slots in order. A stable `Task.key` does not replace
+hash matching: changing task data, including its assigned `idx`, makes it a new
+task for resume.
 
 ## Timeouts and retries
 

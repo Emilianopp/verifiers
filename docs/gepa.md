@@ -41,6 +41,12 @@ Check the config with `uv run vf-gepa @ config.toml --dry-run`, then run it with
 - `max_total_rollouts` — total agent runs allowed (default: 500)
 - `max_concurrent` / `-c` — episodes running at once (default: 128)
 
+Selection happens before the split: the first `num_train` tasks feed reflection,
+and the next `num_val` tasks compare candidate prompts. Those validation tasks
+influence prompt selection, so use a third, untouched group for the final
+baseline comparison. `select.seed` controls shuffling; `seed` controls the
+optimizer's sampling.
+
 ## Output
 
 Results go to `output_dir / run.dir`, defaulting to
