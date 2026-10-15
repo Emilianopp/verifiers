@@ -327,6 +327,21 @@ class Branch(BaseModel):
         return merged if merged.shape[0] == total else None
 
     @property
+    def kv_death(self) -> list[int] | None:
+        """Per-token eviction positions aligned to `token_ids` (-1 = never evicted; see
+        `MessageNode.kv_death`), or None when nothing on this path was evicted."""
+        if all(n.kv_death is None for n in self.nodes):
+            return None
+        out: list[int] = []
+        for node in self.nodes:
+            out.extend(
+                node.kv_death
+                if node.kv_death is not None
+                else [-1] * len(node.token_ids)
+            )
+        return out
+
+    @property
     def sampling_mask(self) -> SamplingMask | None:
         """Sampling masks aligned to this branch's token ids."""
         if all(n.sampling_mask is None for n in self.nodes):

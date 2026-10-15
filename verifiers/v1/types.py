@@ -272,6 +272,10 @@ class TurnTokens(BaseModel):
     # Transient carrier (excluded): per-completion-token sampling masks,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): the KV eviction the engine applied before this turn
+    # (`{"spans": [[start, end], ...], "at": position}`, prompt positions), stamped onto the
+    # evicted nodes' `MessageNode.kv_death` by the turn's `commit`. None when nothing was evicted.
+    eviction: dict[str, Any] | None = Field(default=None, exclude=True)
 
 
 class Response(BaseModel):
