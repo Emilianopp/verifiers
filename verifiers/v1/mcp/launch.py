@@ -11,7 +11,7 @@ import sys
 import sysconfig
 import tempfile
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from functools import cache
 from importlib.metadata import PathDistribution, distribution, packages_distributions
@@ -325,6 +325,7 @@ async def serve_in_runtime(
     runtime: Runtime,
     *,
     exposed: bool,
+    listen_all: bool = False,
     state_url: str | None = None,
     state_secret: str = "",
 ) -> int:
@@ -345,7 +346,7 @@ async def serve_in_runtime(
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
         env["TMPDIR"] = runtime.info.id
-    if exposed and runtime.published_port is not None:
+    if listen_all or (exposed and runtime.published_port is not None):
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
     port_file = None
@@ -432,9 +433,32 @@ async def _serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    services: Mapping[str, Runtime] | None = None,
 ):
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
+    if (service := getattr(cfg, "service", None)) is not None:
+        # The service shares the harness's Compose network and keeps its own egress.
+        if services is None or service not in services:
+            raise ToolsetError(
+                f"server {server.server_name!r} runs in Compose service {service!r}, "
+                "which needs a composed deployment that defines it"
+            )
+        runtime = services[service]
+        port = await serve_in_runtime(
+            server,
+            runtime,
+            exposed=False,
+            listen_all=True,
+            state_url=(
+                runtime.host_url(f"{state_base.rstrip('/')}/state")
+                if state_base
+                else None
+            ),
+            state_secret=state_secret,
+        )
+        yield _ServedServer(f"http://{service}:{port}/mcp", runtime)
+        return
     async with contextlib.AsyncExitStack() as stack:
         # Colocated servers inherit the harness cut. A separately provisioned filtered
         # server has neither that lifecycle nor a published port after isolation;
@@ -501,6 +525,7 @@ async def serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    services: Mapping[str, Runtime] | None = None,
 ):
     """Serve one MCP server and yield the URL visible to its consumer."""
     async with _serve(
@@ -509,6 +534,7 @@ async def serve(
         harness_is_local,
         state_secret=state_secret,
         state_base=state_base,
+        services=services,
     ) as served:
         yield served.url
 
@@ -616,6 +642,7 @@ async def serve_tools(
     state_secret: str = "",
     state_route: str = "",
     state_base: str | None = None,
+    services: Mapping[str, Runtime] | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
     task-scoped `toolsets` are launched by `serve` (placement off each one's `config`; the
@@ -656,6 +683,7 @@ async def serve_tools(
                         harness_runtime,
                         state_secret=state_secret,
                         state_base=state_base,
+                        services=services,
                     )
                 )
                 logger.info("tool server '%s': %s", name, urls[name])

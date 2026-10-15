@@ -371,6 +371,12 @@ class Rollout:
                         state_secret=state_secret,
                         state_route=self.trace.id,
                         state_base=base_url,
+                        services={
+                            name: self.deployment.target(name)
+                            for name in self.deployment.target_backends
+                        }
+                        if self.deployment.mode == "composed"
+                        else None,
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's

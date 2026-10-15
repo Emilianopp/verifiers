@@ -25,11 +25,36 @@ from verifiers.v1.utils.aio import run_shielded
 logger = logging.getLogger(__name__)
 
 
+DeploymentMode = Literal["colocated", "composed"]
+
+
 class DeploymentConfig(BaseConfig):
-    mode: Literal["colocated"] = "colocated"
-    """Harness and tools share the workspace."""
+    mode: DeploymentMode | None = None
+    """How a rollout consumes its runtime and the task's Compose services.
+
+    - `colocated`: the harness and tools share one runtime.
+    - `composed`: one Docker host runs the task's Compose services; the harness and tools
+      share the workspace service, and the task's network policy applies to it alone.
+
+    Unset selects `composed` for tasks with Compose services, otherwise `colocated`."""
     trust_compose: bool = False
     """Permit task-authored Compose privileges and bind mounts on local Docker."""
+
+
+def resolve_mode(
+    mode: DeploymentMode | None, spec: ComposeSpec | None
+) -> DeploymentMode:
+    if mode is None:
+        return "composed" if spec is not None else "colocated"
+    if mode == "colocated" and spec is not None:
+        raise ValueError(
+            "the task declares Compose services; use deployment.mode 'composed'"
+        )
+    if mode == "composed" and spec is None:
+        raise ValueError(
+            "deployment.mode 'composed' needs a task with Compose services"
+        )
+    return mode
 
 
 class _DeploymentStrategy:
@@ -87,7 +112,8 @@ class Deployment:
         self.borrowed_runtime = borrowed_runtime
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
-        self._strategy = _deployment_strategy(self.config, backend.config, spec)
+        self.mode = resolve_mode(self.config.mode, spec)
+        self._strategy = _deployment_strategy(self.mode, backend.config, spec)
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.harness_backend: RuntimeBackend | None = None
         self.execution_backend: RuntimeBackend | None = None

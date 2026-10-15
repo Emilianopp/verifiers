@@ -33,7 +33,9 @@ Borrowed resources remain owned by the context that supplied them.
 The **workspace** is the execution environment where task commands run and task
 files live. `deployment.workspace` returns a `Runtime`; workspace names a
 role, not a separate resource type or just a working directory.
-`agent.deployment.mode = "colocated"` places the harness and tools in that workspace.
+`agent.deployment.mode` places the harness and tools in that workspace: `colocated` on
+a single runtime, `composed` in the workspace service of a task's Compose services. Unset,
+it is `composed` for tasks with Compose services and `colocated` otherwise.
 
 **Compose services** are the named containers in a task's Docker Compose file.
 A task returns an optional `ComposeSpec` from `deployment_spec()` to describe this
@@ -42,7 +44,9 @@ setup and select its workspace service. For example, in a task with `app` and
 Without a Compose specification, the deployment manages a single runtime.
 
 Task hooks can receive `deployment` and use `deployment.target(name)` to access a
-named service through a runtime view. `finalize_services()` collects sidecar evidence
+named service through a runtime view. A task tool server can run in a named service
+(`ToolsetConfig.service`); the harness reaches it over the Compose network, so the
+server can front services the workspace cannot reach. `finalize_services()` collects sidecar evidence
 before verification. See [Harbor's Compose support](harbor.md#docker-compose) for
 provider details. Local Docker Compose requires
 `agent.deployment.trust_compose = true` because task-authored Compose can access

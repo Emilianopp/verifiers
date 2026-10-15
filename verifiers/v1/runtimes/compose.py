@@ -302,6 +302,30 @@ async def compose_services(
                 "service:"
             ):
                 owner = mode.removeprefix("service:")
+            # A composed workspace on a provider VM enforces the task policy in its own
+            # network namespace; it must not share one or hold network privileges.
+            scoped = isinstance(config, PrimeConfig) and config.network_restricted
+            if scoped:
+                workspace = services[spec.workspace]
+                capabilities = {
+                    str(cap).upper().removeprefix("CAP_")
+                    for cap in workspace.get("cap_add") or []
+                }
+                if (
+                    owner != spec.workspace
+                    or workspace.get("privileged")
+                    or capabilities & {"ALL", "NET_ADMIN", "NET_RAW", "SYS_ADMIN"}
+                    or workspace.get("pid") == "host"
+                    or workspace.get("ipc") == "host"
+                    or any(
+                        "docker.sock" in str(volume.get("source", ""))
+                        for volume in workspace.get("volumes", [])
+                    )
+                ):
+                    raise SandboxError(
+                        "a network-restricted Compose workspace cannot share another "
+                        "service's network, hold network privileges, or mount the Docker socket"
+                    )
 
             main = config.model_dump(
                 include={"image", "workdir"}, exclude_defaults=True, exclude_none=True
@@ -310,6 +334,14 @@ async def compose_services(
                 main["image"] = config.image
             if "workdir" in main:
                 main["working_dir"] = main.pop("workdir")
+            if scoped:
+                main.update(
+                    {
+                        "cap_drop": ["NET_ADMIN", "NET_RAW"],
+                        "security_opt": ["no-new-privileges:true"],
+                        "sysctls": {"net.ipv6.conf.all.disable_ipv6": "1"},
+                    }
+                )
             overlay = {"services": {spec.workspace: main}}
             # Port publication belongs to the service that owns main's network.
             publish = overlay["services"].setdefault(owner, {})
@@ -362,6 +394,19 @@ async def compose_services(
                 raise SandboxError(
                     f"Compose requires workspace service {spec.workspace!r}"
                 )
+            if scoped:
+                from verifiers.v1.runtimes.docker.host_egress import HostEgress
+
+                assert host_backend is not None
+                workspace_backend = backends[spec.workspace]
+                egress = HostEgress(
+                    host_backend,
+                    workspace_backend._container,
+                    config,
+                    dict(line.split() for line in containers.splitlines()),
+                )
+                await egress.start()
+                workspace_backend.use_host_egress(egress)
         yield (
             backends,
             partial(compose, "stop", spec.workspace, timeout=60),

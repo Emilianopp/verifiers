@@ -30,7 +30,13 @@ class _ColocatedDeployment(_DeploymentStrategy):
                 logger.warning("solver teardown failed before grading", exc_info=True)
 
 
-class _ContainerDeployment(_DeploymentStrategy):
+class _ComposedDeployment(_DeploymentStrategy):
+    """Compose services on one Docker host; the harness and tools share the workspace.
+
+    On a provider VM the task's network policy applies to the workspace container
+    only (see `compose_services`); the other services keep the VM's network.
+    """
+
     async def start(self, d):
         if d.borrowed_runtime is not None:
             raise ValueError("a composed deployment cannot borrow a single target")
@@ -56,9 +62,9 @@ class _ContainerDeployment(_DeploymentStrategy):
             )
 
 
-def _deployment_strategy(config, runtime_config, spec):
-    if spec is not None:
+def _deployment_strategy(mode, runtime_config, spec):
+    if mode == "composed":
         if not isinstance(runtime_config, (DockerConfig, PrimeConfig, ModalConfig)):
             raise ValueError("Compose requires Docker, Prime, or Modal VM runtime")
-        return _ContainerDeployment()
+        return _ComposedDeployment()
     return _ColocatedDeployment()

@@ -124,7 +124,11 @@ Host networking is unsupported. Runtime defaults preserve the authored image and
 working directory; task settings and non-default runtime overrides take precedence.
 
 For Prime, set `runtime.type = "prime"`. One VM hosts Docker and all
-services, and its network policy applies to every service after trusted setup.
+services. After trusted setup the task's network policy applies to the `main` container
+alone: the VM host runs the verifiers egress proxy, `main`'s network namespace is cut
+down to that proxy, its Compose peers and loopback, and peers resolve through `main`'s
+hosts file. The other services keep the VM's network. A restricted `main` cannot share
+another service's network, hold network privileges, or mount the Docker socket.
 For Modal, set `runtime.type = "modal"`; Compose uses the SDK's experimental VM
 backend with Docker support and requires `network_access = true` and access to that
 backend. Local Docker Compose also requires unrestricted networking. GPU Compose

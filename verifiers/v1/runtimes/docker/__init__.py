@@ -38,6 +38,7 @@ from verifiers.v1.utils.scope import run_scope
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from verifiers.v1.runtimes.docker.host_egress import HostEgress
     from verifiers.v1.runtimes.modal import ModalConfig
     from verifiers.v1.runtimes.prime import PrimeConfig
 
@@ -99,6 +100,7 @@ class DockerBackend(ContainerBackend):
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._service_url: str | None = None
         self._proxy: EgressProxy | None = None
+        self._host_egress: HostEgress | None = None
         self._image_env: dict[str, str] = {}
         self._stopped = False
         self._cut = False
@@ -416,8 +418,17 @@ class DockerBackend(ContainerBackend):
         descriptors.frombytes(ancillary[0][2][: descriptors.itemsize])
         return socket.socket(fileno=descriptors[0])
 
+    def use_host_egress(self, egress: HostEgress) -> None:
+        """Enforce this container's execution policy on its Docker host VM, leaving
+        the VM and other containers on the VM's network."""
+        self._host_egress = egress
+
     async def prepare_execution(self, routes: list[str] | None) -> None:
         """Allow the declared framework routes, then leave the proxy as the only way out."""
+        if self._host_egress is not None:
+            await self._host_egress.apply(routes)
+            self._cut = self._cut or routes is not None
+            return
         if self._host_backend is not None:
             await self._host_backend.prepare_execution(routes)
             return
@@ -498,6 +509,8 @@ class DockerBackend(ContainerBackend):
         self._cut = True
 
     def _proxy_env(self) -> dict[str, str]:
+        if self._host_egress is not None:
+            return self._host_egress.env()
         assert self._proxy is not None
         host_backend = "127.0.0.1" if sys.platform == "linux" else _PROXY_HOST
         proxy = (
@@ -552,7 +565,9 @@ class DockerBackend(ContainerBackend):
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # A setup server outlives the network cut and needs the initially open proxy.
-        if self.network_restricted and self._proxy is not None:
+        if self.network_restricted and (
+            self._proxy is not None or self._host_egress is not None
+        ):
             env = {**env, **self._proxy_env()}
         # The engine owns the background server as a detached exec process.
         command = self._exec(runtime.process_env(env), user=runtime.user)
