@@ -1,67 +1,84 @@
 # Building Environments
 
 An environment package defines the tasks an agent receives, the files and tools
-it can use, and how its work is scored. Start with a `Taskset` and a `Task`; add a
-custom `Env` only when you need control flow the built-in environments do not cover.
+available during a rollout, and how the final work is scored. Most environments
+only need a `Taskset` and a `Task`, since the built-in `Env` classes already
+cover single-agent evaluation, isolated grading, and multi-agent judges; you
+only need to write a custom `Env` when you want bespoke control flow between
+agents.
 
 ## Choose where the work runs
 
-| Part | Where it runs | What it owns |
-| --- | --- | --- |
-| Evaluator | The machine running `vf-eval` or an environment worker | Dataset loading, Python task hooks, agent coordination, traces, and scoring logic |
-| Agent sandbox | The agent's configured runtime | The harness, task files, and commands the agent executes |
-| Grading sandbox | A fresh runtime when using isolated verification | A clean task setup, copied output files, and verifier-only dependencies or tests |
-| Task tools | Their configured runtime, or the agent sandbox with `colocated = true` | MCP server processes and their state |
+A verifiers evaluation spans up to four execution boundaries:
 
-Python task hooks always execute on the evaluator. A call to `runtime.read()` or
-`runtime.run()` operates in the supplied sandbox; `Path.read_text()` reads on the
-evaluator. During isolated scoring, the supplied runtime is the grading sandbox.
+- **The evaluator** (the machine running `vf-eval` or an environment worker) loads datasets, runs Python task hooks (`setup`, `finalize`, `@vf.reward`), coordinates agents, and records traces.
+- **The agent sandbox** (the agent's configured [runtime](runtimes.md#capability-matrix)) runs the harness, holds the task workspace, and executes any commands the agent invokes.
+- **The grading sandbox** is a fresh container started after the agent finishes when you use `IsolatedVerifierEnv`, giving deterministic graders a clean filesystem containing only declared agent outputs and private test assets.
+- **Task tools** run in their own configured runtime by default, or inside the agent sandbox when configured with `colocated = true`.
 
-For answer-only tasks, ordinary `@vf.reward` methods and the default
-`SingleAgentEnv` are enough. For file-based work, decide whether scoring should
-use the agent's existing filesystem or a fresh sandbox. The
-[runtime matrix](runtimes.md#capability-matrix) covers backend support.
+Because Python task hooks always execute on the evaluator, calling
+`Path.read_text()` reads from the evaluator's own filesystem, whereas
+`await runtime.read()` or `await runtime.run()` operates inside whichever
+sandbox was passed to the hook (the agent sandbox during `setup` and `finalize`,
+or the grading sandbox during isolated scoring). For answer-only benchmarks,
+scoring the final message in `@vf.reward` with the default `SingleAgentEnv` is
+all you need. When tasks modify files or execute untrusted code, you can either
+score directly inside the agent's sandbox or transfer the outputs into a
+separate grading sandbox.
 
 ## Create a package
+
+To scaffold a new environment package inside a verifiers checkout, initialize
+a standalone library with `uv` and add an editable dependency on the repository:
 
 ```bash
 uv init --lib --build-backend hatch --no-workspace --python '>=3.11' environments/file_sum_v1
 uv add --project environments/file_sum_v1 --editable "$PWD"
 ```
 
-Run these commands from the Verifiers checkout. They create a package with its
-own `pyproject.toml` and an editable dependency on this checkout. Put task data,
-hooks, and scoring in `environments/file_sum_v1/src/file_sum_v1/taskset.py`.
-Export the taskset and, when needed, an environment from the package's `__init__.py`.
+This creates `environments/file_sum_v1/pyproject.toml` with its own dependency
+list. Define your task data, lifecycle hooks, and scoring in
+`environments/file_sum_v1/src/file_sum_v1/taskset.py`, and re-export the
+`Taskset` (along with an `Env` class if the package requires a specific one)
+from `src/file_sum_v1/__init__.py` so verifiers can discover them.
 
-Keep dataset choices on `TasksetConfig`, task settings on `TaskConfig`, and saved
-per-task values on `TaskData`. Implement `Taskset.load()`, not `__init__`. See
-[tasksets](tasksets.md) for dataset loading, judges, images, and custom tools.
+As covered in [tasksets](tasksets.md), dataset-level options belong on
+`TasksetConfig`, per-task behavior settings belong on `TaskConfig`, and
+immutable per-example fields belong on `TaskData`. Always load tasks by
+implementing `Taskset.load()` rather than overriding `Taskset.__init__`.
 
 ## Load an existing benchmark
 
-Load datasets in `Taskset.load()` on the evaluator. For Hugging Face datasets,
-pass the package's dataset, split, and revision settings to `load_dataset`.
-Apply benchmark-specific filters before yielding tasks; use the evaluation's
-`select` config for sampling. Preserve the source prompts, reference answers,
-image order, and scoring rules. Put extra reference fields on a `TaskData`
-subclass; they are not automatically added to the agent's messages.
+When wrapping an existing benchmark, fetch the underlying dataset inside
+`Taskset.load()` on the evaluator (for example, by passing dataset name, split,
+and revision fields from `TasksetConfig` to Hugging Face's `load_dataset`).
+Filter out unsupported rows in `load()`, but leave subset sampling to the
+evaluation's `select` config so users can slice the benchmark from the CLI or
+TOML. Store reference answers and other ground-truth metadata on a `TaskData`
+subclass; extra `TaskData` fields stay on the evaluator for scoring and are never
+injected into the agent's prompt. Set `TaskData.id` to a stable upstream
+identifier (leaving `idx` for verifiers to assign from the loaded stream
+order) and pin dataset revisions and container images when you need reproducible
+runs; see [task identity](tasksets.md#task-identity) for how `id` and `idx`
+behave across reordered datasets.
 
-Set `TaskData.id` from a stable source identifier. Let Verifiers assign `idx`,
-which is the position in the loaded task stream. Pin the dataset revision and
-image reference when results must be reproducible. See
-[task identity](tasksets.md#task-identity) for stable keys across reordered data.
+Because dataset caches and package files live on the evaluator, they do not
+appear inside local containers or remote sandboxes automatically. Write small
+agent-visible inputs into the sandbox with `await runtime.write(...)` during
+`setup`, or bake large assets directly into the task image. Any private test
+scripts or reference files should be bundled inside your Python package, read
+via `importlib.resources` (rather than relative working-directory paths), and
+written into the sandbox only during `stage_verifier` so the agent cannot
+inspect them; see [packaged grader scripts](runtimes.md#packaged-grader-scripts)
+for managing dependencies across evaluator and sandbox environments. Similarly,
+if a task sets `TaskData.agent_user`, keep in mind that `setup` still runs as
+the runtime's default user, so any working directories or output paths created
+during `setup` must be made writable by `agent_user` before the harness starts
+(see [execution users](runtimes.md#execution-users)).
 
-Dataset caches and package files live on the evaluator. They do not appear in a
-remote sandbox automatically. Copy agent-visible inputs with `runtime.write`
-during `setup`, or include large assets in the task image. Copy private grader
-files only during `stage_verifier`. Include those files in the installed package,
-and read them with `importlib.resources` instead of relying on the current directory.
-The [dependency guide](runtimes.md#packaged-grader-scripts) explains which Python
-environment needs each dependency.
-
-These `prime-envs` packages show common patterns. Check their declared Verifiers
-version before adapting them; use the APIs documented here for this version.
+The [`prime-envs`](https://github.com/PrimeIntellect-ai/prime-envs) repository
+contains production implementations of these patterns (check each package's
+`pyproject.toml` for the verifiers version it targets):
 
 | Pattern | Example | Guide |
 | --- | --- | --- |
@@ -74,21 +91,19 @@ version before adapting them; use the APIs documented here for this version.
 | Private grading shared by several tasksets | [Lean common](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/packages/lean_common) | [Private tests](#transfer-outputs-and-prepare-private-tests) |
 | A tool calling an external evaluation service | [PTX remote](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/code/ptx_remote) | [Stateful tools](tasksets.md#stateful-tools) |
 
-A remote service is a separate execution boundary. Its GPU, files, and network
-access are managed by that service, not by the agent runtime. Save its result
-in rollout state for scoring, then copy evidence needed after the run into
-`trace.info`.
-
-If a task sets `agent_user`, setup still uses the runtime's default user. Make
-the workdir and output paths writable by the named account before the harness
-starts. See [execution users](runtimes.md#execution-users) for supported backends
-and which lifecycle stages use that account.
+When a tool delegates execution to an external service (like `ptx_remote`
+above), that service manages its own compute, files, and networking outside the
+agent runtime. Store the service's response on rollout state so `@vf.reward` can
+score it, and copy any diagnostic output you want persisted into `trace.info`.
 
 ## Separate agent and grading sandboxes
 
-Use `IsolatedVerifierEnv` for deterministic grading in a fresh runtime. It runs
-one agent, transfers the declared outputs, then adds task rewards and metrics to
-that agent's trace. The grader does not need a second model.
+When a task's grading logic shouldn't run inside the solver's sandbox (for
+example, because the agent could modify test files, environment state, or
+installed packages), use `IsolatedVerifierEnv`. It runs a single solver agent,
+copies only the declared output artifacts out of the solver container before
+tearing it down, and starts a fresh grading container to run your deterministic
+`@vf.reward` and `@vf.metric` methods against the solver's trace.
 
 ```mermaid
 sequenceDiagram
@@ -104,7 +119,8 @@ sequenceDiagram
     E->>G: Remove sandbox
 ```
 
-For example, create `src/file_sum_v1/taskset.py` inside the package:
+Here is a complete `src/file_sum_v1/taskset.py` that stages an input file for
+the solver and grades the output file in an isolated sandbox:
 
 ```python
 import verifiers.v1 as vf
@@ -145,11 +161,17 @@ class FileSumTaskset(vf.Taskset[FileSumTask, vf.TasksetConfig]):
         ]
 ```
 
-The empty answer file makes an untouched task score zero. `setup` runs in both
-sandboxes; restoring the solver's output replaces that empty file in the grader.
-The gold check writes a known answer and uses the same reward method.
+Because `setup` runs in both the solver sandbox and the fresh grading sandbox,
+writing an empty `/app/output/answer.txt` during `setup` guarantees that an
+untouched task scores zero instead of failing with a missing-file error. When
+the grading sandbox starts, `IsolatedVerifierEnv` runs `setup` first and then
+restores `/app/output` from the solver, overwriting the placeholder with the
+agent's actual output before `correct` reads it. The `validate` method reuses
+the same reward function by writing the known gold answer and checking that
+`correct` returns `1.0`.
 
-Select the environment by exporting it in `src/file_sum_v1/__init__.py`:
+To make isolated verification the default for the package, export
+`IsolatedVerifierEnv` alongside your taskset in `src/file_sum_v1/__init__.py`:
 
 ```python
 from verifiers.v1.envs.isolated_verifier import IsolatedVerifierEnv
@@ -159,10 +181,10 @@ from file_sum_v1.taskset import FileSumTaskset
 __all__ = ["FileSumTaskset", "IsolatedVerifierEnv"]
 ```
 
-Alternatively, select it at evaluation time with `--env.id isolated-verifier`.
-Without either selection, the default environment scores inside the agent's
-runtime. Harbor packages should export `HarborEnv` and use Harbor's
-[separate-verifier declaration](harbor.md#separate-verifier-environments).
+You can also select it at evaluation time with `--env.id isolated-verifier` (if
+neither is set, verifiers uses `SingleAgentEnv` and scores inside the solver's
+runtime). For Harbor benchmarks, export `HarborEnv` instead and configure
+Harbor's [separate-verifier settings](harbor.md#separate-verifier-environments).
 
 ### Choose a different grading runtime or image
 
@@ -189,41 +211,43 @@ cpu = 1
 memory = 1
 ```
 
-Omit `env.verifier.runtime` to create a fresh copy of the solver's resolved
-runtime settings. When supplied, it is an independent runtime config: configure
-its backend, resources, and network settings as needed. It can use a different
-backend from the solver. An explicitly supplied verifier `image` overrides the
-task image, so the grader can contain dependencies absent from the solver.
-Build and publish custom images before evaluation.
+If you omit `[env.verifier.runtime]`, the verifier provisions a fresh container
+using the same resolved runtime settings as the solver. Providing
+`[env.verifier.runtime]` lets you configure the grading sandbox independently: you
+can give it smaller CPU and memory limits, different network rules, a different
+container backend, or a dedicated `image` preloaded with test dependencies that
+you do not want in the solver image. You can also set `env.verifier.env` to
+override the environment variables returned by `Task.runtime_env()` for verifier
+processes (because TOML configs are saved with evaluation outputs, keep raw
+secrets out of `env.verifier.env`).
 
-`env.verifier.env` replaces the task's `runtime_env()` values for verifier
-processes. Config values are saved, so keep secrets out of that field.
-
-Both sides must use container runtimes; `subprocess` is refused for artifact
-collection and isolated grading. Use absolute artifact paths if the two runtimes
-have different workdirs. Relative paths require matching workdirs.
+Both the solver and verifier must run on container-backed runtimes (`subprocess`
+does not support artifact collection or isolated grading). Because artifacts are
+restored without path translation, relative artifact paths require the solver
+and verifier to share the same `workdir`; use absolute paths if their working
+directories differ.
 
 ### Transfer outputs and prepare private tests
 
-Declare every output needed for grading in `TaskData.artifacts`, using files or
-directories. Paths are restored at the same locations, replacing existing
-contents under each declared root. Keep these roots separate from trusted tests
-and grader dependencies. A missing required artifact fails the rollout; use
-`vf.Artifact(source=..., required=False)` for an optional output and handle its
-absence in scoring. Directory artifacts can use `exclude` patterns.
+List every file or directory the grader needs in `TaskData.artifacts` (along
+with any `exclude` glob patterns for directories). When restoring artifacts into
+the grading sandbox, verifiers replaces whatever exists under those paths, so
+keep agent output directories separate from locations where you install trusted
+tests or grader dependencies. By default, a missing artifact fails the rollout;
+if an output is optional, declare it with `vf.Artifact(source=..., required=False)`
+and handle its absence in your reward function.
 
-Transfer ordinary files and directories. Confined links are supported; links
-that escape an artifact root or traverse other symlinks are rejected. FIFO and
-device nodes are omitted from collected archives.
+In addition to declared paths, `/logs/artifacts` is collected automatically
+whenever it exists. Collected archives are held in memory on the evaluator only
+until grading finishes (up to `TaskData.artifact_max_bytes`, which defaults to
+32 MiB) and are not persisted in traces; if you want to keep small snippets of
+output on the trace, copy them into `trace.info` during `finalize`.
 
-`/logs/artifacts` is collected automatically when present. The total archive
-limit is 32 MiB by default, controlled by `TaskData.artifact_max_bytes`. Archives
-stay in evaluator memory during grading; they are not saved in traces. Save
-small evidence needed later in `trace.info` during `finalize`.
-
-Use `stage_verifier` for private inputs needed by a grader program. It runs after
-artifact restoration and only in the grading sandbox. For example, a task with
-packaged tests can add this hook:
+To copy private test suites or reference data into the grading sandbox without
+exposing them to the solver, implement `stage_verifier`. Unlike `setup` (which
+runs in both sandboxes and should only prepare inputs the agent is allowed to
+see), `stage_verifier` runs only in the grading sandbox after solver artifacts
+have been restored:
 
 ```python
 from importlib.resources import files
@@ -234,38 +258,36 @@ async def stage_verifier(self, runtime: vf.Runtime) -> None:
     await runtime.write("/tests/check.py", tests)
 ```
 
-Package `private_tests.py` with the evaluator code and run it from the reward
-method using `runtime.run`. Keep it out of the solver image, solver setup, and
-declared artifacts. Install grading dependencies in the verifier image or this
-hook. Task `setup` also runs in the solver, so it must only prepare inputs the
-agent may see. Restrictions start after setup and staging; task and verifier
-network policies still combine as described in [runtimes](runtimes.md#network-policies).
+Bundle `private_tests.py` inside your environment package and invoke it from
+`@vf.reward` via `runtime.run`. Any grading dependencies can be baked into the
+verifier image or installed during `stage_verifier` before execution-time
+[network policies](runtimes.md#network-policies) take effect.
 
-Task `finalize` runs in the solver before collection. Harness metrics are recorded
-there; task metrics and rewards are deferred to the verifier. Configured task
-judges that call models are rejected by `isolated-verifier`. Grading failures
-retry in a fresh sandbox according to `env.verifier.retries` (default: 2 extra
-attempts). A returned zero reward is a completed grade, not a retryable failure.
+During an isolated run, task `finalize` and harness metrics still execute in the
+solver sandbox before artifacts are collected, while task `@vf.reward` and
+`@vf.metric` methods wait for the verifier sandbox. If verifier setup, artifact
+restoration, staging, or grading raises an error, `IsolatedVerifierEnv` retries
+in a fresh grading container up to `env.verifier.retries` times (default: `2`,
+whereas a completed grade that returns `0.0` is not retried). Because
+`IsolatedVerifierEnv` is designed for deterministic container grading, it
+rejects model-backed task judges; use an agentic judge environment if a model
+needs to evaluate the workspace.
 
 ## Add other behavior
 
-| Need | Use |
-| --- | --- |
-| Extra task-specific tools | Define a `vf.Toolset`; configure its runtime or set `colocated = true` to share the agent sandbox |
-| Several attempts or a model judge | `best-of-n`, `agentic-judge`, or `shared-agentic-judge` |
-| A model playing the user | `user-sim` |
-| A game or scripted follow-up messages | A custom `Env.run()` driving `agents.<role>.interaction(task)` |
-| Several services, such as an app and database | A Harbor task with Compose and `HarborEnv` |
-| A different agent program | A built-in harness, or a custom `vf.Harness` |
+When your benchmark needs more than a single solver and deterministic grading,
+you can combine other verifiers primitives:
 
-See [environment control flow](env.md#custom-control-flow),
-[task tools](tasksets.md#adding-tools), and [harnesses](harnesses.md). A custom
-environment's `finalize(task, episode)` runs after agent-owned runtimes are
-released; use saved trace evidence there.
+- **Task-specific MCP tools**: define a [`vf.Toolset`](tasksets.md#adding-tools) on the task, running either in its own runtime or inside the agent sandbox with `colocated = true`.
+- **Multi-attempt sampling or model judges**: run the built-in `best-of-n`, `agentic-judge`, or `shared-agentic-judge` environments, or `user-sim` when a model needs to role-play the user across turns.
+- **Games and multi-turn scripted interactions**: write a custom [`Env.run()`](env.md#custom-control-flow) that drives `agents.<role>.interaction(task)` across turns or agents. Note that a custom environment's `finalize(task, episode)` hook runs after agent runtimes have been torn down, so read from saved trace data (`trace.info`) rather than live sandboxes.
+- **Multi-container service stacks** (such as an application server paired with a database): package the task as a Harbor benchmark using Docker Compose and `HarborEnv`.
+- **Custom agent loops or CLI harnesses**: pick another built-in [harness](harnesses.md) or subclass `vf.Harness` to install and launch a different agent binary.
 
 ## Check the environment
 
-Install the package in the CLI's Python environment, then check it:
+Install your new package into the CLI environment and run a quick smoke test
+before launching a full evaluation:
 
 ```bash
 uv pip install -e environments/file_sum_v1
@@ -274,13 +296,14 @@ uv run vf-validate file-sum-v1 --runtime.type docker -n 1
 uv run vf-eval @ file-sum.toml -n 1 -r 1 -c 1 --no-push
 ```
 
-For this example, validation checks that the gold answer passes and the untouched
-answer fails. The evaluation exercises the full sandbox transfer and grading
-lifecycle. Inspect its trace for the reward and any setup or scoring
-error before increasing the run size.
-
-`vf-validate` checks tasks directly; it does not run `Env`, transfer artifacts,
-or call `stage_verifier`. If a gold check needs private staging, call it from
-`validate`. The default noop check also lacks that staging, so tasks whose reward
-requires it need a separate untouched-output check through their grading path.
-See [validation and trace inspection](debugging.md).
+`--dry-run` validates the TOML config and taskset resolution without starting
+containers. Next, `vf-validate` runs your task's `validate` hook and a no-op
+check inside a single sandbox to confirm that the gold answer scores `1.0` while
+an untouched workspace scores `0.0`. Because `vf-validate` exercises `Task`
+directly rather than running an `Env`, it does not transfer artifacts or call
+`stage_verifier` automatically; if your reward function relies on files created
+in `stage_verifier`, call `await self.stage_verifier(runtime)` inside `validate`
+as well. Finally, running a single rollout with `vf-eval -n 1 -r 1 -c 1 --no-push`
+exercises the full solver-to-verifier transfer lifecycle; see
+[debugging](debugging.md) for inspecting saved traces and diagnosing setup or
+grading errors.

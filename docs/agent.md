@@ -1,6 +1,6 @@
 # Agent
 
-An `Agent` runs a model and harness on a task and returns a trace. Use `AgentConfig` to choose its settings:
+An `Agent` pairs a configured harness and model with a `Runtime`, configured through `AgentConfig`. Calling `agent.run(task)` executes a full rollout on a `Task` and returns its `Trace`:
 
 ```python
 import verifiers.v1 as vf
@@ -10,15 +10,9 @@ async with vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2")) as solver:
     trace = await solver.run(vf.Task(vf.TaskData(prompt="What is 2+2?")))
 ```
 
-Use `agent.interaction(task)` to send follow-up messages. Each `turn()` runs one
-harness segment, which may include several model and tool calls. Keep sending
-follow-up messages until `segment.terminated`, or leave the context to end the
-exchange yourself. After the agent's final reply, the next call returns an empty
-terminated segment without consuming the supplied message. Closing the context
-finishes the rollout, including scoring.
+If you want to drive a conversation turn by turn instead of running to completion in one shot, `agent.interaction(task)` holds the rollout open as an async context manager. The caller acts as the user, and each call to `turn()` runs one harness segment (which may span several model and tool calls) and returns a `Segment`. If the task already defines a `prompt`, call `turn()` with no arguments to run the opening turn; if `prompt=None`, pass the first user message to `turn(message)`.
 
-If the task has a prompt, start with `turn()`. If `prompt=None`, supply the first
-message with `turn(message)`. This example stops after three model turns:
+You can keep sending follow-up messages until `segment.terminated` is true (subsequent calls after termination return an empty terminated segment without consuming the message), or exit the `async with` block early to end the exchange yourself. Leaving the block finalizes and scores the rollout so `interaction.trace` is ready to inspect:
 
 ```python
 import verifiers.v1 as vf
@@ -37,9 +31,7 @@ trace = interaction.trace
 
 ## Messages during an active turn
 
-Use `turn()` for a scripted exchange where each message waits for the previous
-segment. For input arriving while the agent works, use `send()` on the open
-interaction:
+`turn()` is designed for sequential exchanges where each user message waits for the previous segment to finish. When you need to send input while the agent is still working, or wake an idle interaction with new input, use `interaction.send()`:
 
 ```python
 receipt = await interaction.send(
@@ -47,16 +39,9 @@ receipt = await interaction.send(
 )
 ```
 
-- `mode="steer"` (the default) delivers at the harness's next safe point during active work. The harness must support steering; unsupported steering raises an error.
-- `mode="queue"` waits for the current turn to yield. Pending messages arrive together, in order, in the next turn. It does not wake a waiting tool inside the active turn and does not require steering support.
+- `mode="steer"` (the default) injects the message at the harness's next safe point during active work, which requires a harness that supports live steering.
+- `mode="queue"` holds the message until the current turn yields, then delivers any pending messages together in order at the start of the next turn. Because it waits for a turn boundary rather than interrupting an active tool or model call, it does not require steering support.
 
-Both modes resume an idle interaction. Start a prompted task's opening `turn()`
-before sending more messages. Await or schedule `send()` to submit the message.
-The receipt confirms acceptance, not completion of the agent's work: keep the
-interaction context open while that work runs. Closing it cancels outstanding
-delivery tasks and finishes the rollout.
+For tasks that define an initial `prompt`, start the opening `turn()` before calling `send()`. Note that the returned receipt confirms whether the message was accepted for delivery, not that the agent has finished acting on it. Keep the `interaction` context open while the agent works, since exiting the block cancels outstanding deliveries and finishes the rollout.
 
-An `outcome` of `injected` means delivery succeeded. A `promptRequired` receipt
-means the message was not delivered; inspect its `reason`, such as
-`interactionStopped`. A stable `message_id` deduplicates successful deliveries
-within the interaction. Reusing an ID with different text raises an error.
+A receipt with `outcome="injected"` indicates that delivery succeeded, whereas `outcome="promptRequired"` means the message could not be delivered (check `receipt.reason`, such as `interactionStopped`). Passing a stable `message_id` deduplicates repeated deliveries of the same message within an interaction.

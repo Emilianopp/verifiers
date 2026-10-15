@@ -1,27 +1,20 @@
 # Evaluation
 
-For new model evaluations, use [Prime-RL's `uv run eval`](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/eval.md)
-from a Prime-RL installation. `vf-eval` remains available, but tells users it
-will be deprecated and directs them to that runner.
+For new model evaluations, use [`uv run eval` in prime-rl](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/eval.md). `vf-eval` remains available, though it prints a deprecation notice pointing to prime-rl's runner. This page covers `vf-eval`, its configuration, and its output layout.
 
-This page describes the bundled `vf-eval` CLI, its config, and its output files.
-Prime-RL's config and resume instructions are in its own guide.
-
-To run an installed taskset with `vf-eval`:
+To evaluate an installed taskset, run `vf-eval`:
 
 ```bash
 uv run vf-eval primeintellect/terminal-bench-2
 ```
 
-The taskset must already be installed. An ID such as `owner/name@version` loads
-the installed `name` package; it does not download or enforce that version.
-Include the taskset and harness IDs in `--help` to see their specific options:
+The taskset package must already be installed in your environment (passing an ID like `owner/name@version` loads the installed `name` package rather than downloading or pinning that version). Because tasksets and harnesses expose their own CLI flags, include their IDs when passing `--help` to see all available options:
 
 ```bash
 uv run vf-eval my-task --env.agent.harness.id codex --help
 ```
 
-You can also use `.toml` files for configuration:
+You can also configure a run with a `.toml` file:
 
 ```toml
 model = "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B"
@@ -40,14 +33,9 @@ version = "0.116.0"
 type = "docker"
 ```
 
-Check the config with `uv run vf-eval @ config.toml --dry-run`, then run it with
-`uv run vf-eval @ config.toml`.
+Validate the config with `uv run vf-eval @ config.toml --dry-run`, and run the evaluation with `uv run vf-eval @ config.toml`. Dotted CLI flags such as `--sampling.temperature 0.5` override values from the `.toml` file when both are present.
 
-CLI flags override TOML values. Use dotted names, such as `--sampling.temperature 0.5`.
-
-Results go to `output_dir / run.dir`, defaulting to
-`outputs/<env>--<model>--<harness>--<short-id>/`. If you select an `env.id`, it is
-included before the taskset name. The run contains:
+By default, evaluation outputs are written to `output_dir / run.dir`, which resolves to `outputs/<env>--<model>--<harness>--<short-id>/` (where `<env>` is the taskset name, prefixed by the paired env ID when `--env.id` sets one). Each run directory contains:
 
 ```text
 configs/eval.toml           # launch TOML, when supplied
@@ -59,8 +47,7 @@ logs/latest                # symlink to the latest attempt
 
 ## Model endpoints
 
-The default client uses Prime Inference and `PRIME_API_KEY`, falling back to the
-active Prime CLI credentials. To use another compatible endpoint:
+By default, the client connects to Prime Inference and authenticates with `PRIME_API_KEY`, falling back to your active Prime CLI credentials. To point `vf-eval` at another compatible endpoint, set `base_url` and the name of the environment variable holding your API key:
 
 ```toml
 [client]
@@ -68,13 +55,9 @@ base_url = "http://localhost:8000/v1"
 api_key_var = "MODEL_API_KEY"
 ```
 
-Put the variable's name in config and its secret value in your environment.
-The endpoint must support the API used by the harness. Each agent can override
-`model`, `client`, and `sampling` under
-`env.<agent>`. Task judges have independent client settings; see
-[judges](tasksets.md#using-judges).
+The endpoint must support whichever API the harness uses. In multi-agent runs, each agent can override `model`, `client`, and `sampling` under `env.<agent>`, while task [judges](tasksets.md#using-judges) configure their own client settings independently.
 
-For extra headers containing secrets, map header names to environment variables:
+To pass secret headers from environment variables or customize HTTP timeouts, use `client.headers_from_env` and `client.timeout`:
 
 ```toml
 [client.headers_from_env]
@@ -85,67 +68,43 @@ connect = 30
 read = 300
 ```
 
-These values are read when the client is built and override matching static
-`client.headers`, ignoring header-name case. Static header values are saved in
-the resolved config. HTTP timeouts are in seconds: `connect` defaults to 30;
-`read`, `write`, and `pool` have no limit by default. `read` limits the gap
-between received bytes, not the duration of the whole response. Use agent
-stage timeouts to bound a rollout.
+Unlike static `client.headers` (which are written into the saved resolved config), `headers_from_env` reads environment variables when the client starts and overrides any matching static headers. HTTP timeouts are in seconds: `connect` defaults to `30`, while `read`, `write`, and `pool` have no limit by default. Because `read` only bounds the interval between received chunks rather than the total duration of a response, use agent stage timeouts to cap a full rollout.
 
 ## Sampling settings
 
-Set shared sampling under `[sampling]` and per-agent overrides under
-`[env.<agent>.sampling]`. Overrides merge by field, so setting an agent's
-temperature keeps the shared token limit and provider options. An explicit
-Python `None` or JSON `null` clears an inherited field.
+Shared generation parameters go under `[sampling]`, with per-agent overrides under `[env.<agent>.sampling]`. Overrides merge field by field, so setting an agent's `temperature` preserves the shared token limit and provider options (pass `None` in Python or `null` in JSON to clear an inherited field).
 
-Provider-specific options can be set alongside `temperature`, `top_p`,
-`reasoning_effort`, and `max_tokens`. Options inside `extra_body` are also
-accepted; a value outside `extra_body` wins if both set the same option.
-`max_completion_tokens` is an alias for `max_tokens`.
+Alongside standard parameters like `temperature`, `top_p`, `reasoning_effort`, and `max_tokens` (or its alias `max_completion_tokens`), you can pass provider-specific options either directly in `[sampling]` or inside `extra_body`.
 
 ## Common config values
 
 - `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
-- `sampling` — model settings, such as `sampling.temperature`
+- `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
 - `env.agent.harness.id` — pick the agent's harness (`[env.agent.harness]` in TOML)
-- `select` — [which tasks to evaluate](tasksets.md#selecting-tasks). `-n` sets `select.limit`; `-s` enables `select.shuffle`.
+- `select` — which tasks to evaluate (see [Selecting tasks](tasksets.md#selecting-tasks)). `-n` sets `select.limit` and `-s` enables `select.shuffle`
 - `num_rollouts` — rollouts per task
-- `max_concurrent` / `-c` — episodes running at once (default 128); lower it for a small check or limited sandbox capacity
+- `max_concurrent` / `-c` — max episodes in flight at once (default: `128`); lower this for quick checks or limited sandbox capacity
 - `verbose` — log at debug instead of info
-- `rich` — the live dashboard (default); `--no-rich` streams logs to the console and
-  prints each trace as JSON at the end
-- `rich.show_logs` — show live logs, including worker logs, in place of the dashboard's rollout rows
-- `push` — upload results to Prime Intellect as the run progresses (default); `--no-push` keeps them local
-
-The platform uses `run.attach <evaluation-id>` to send results to an evaluation
-it already created. Local runs do not need to set it.
+- `rich` — the live dashboard (default); `--no-rich` streams logs to the console and prints each trace as JSON at the end
+- `rich.show_logs` — replace the dashboard's per-rollout rows with a live tail of the attempt's logs (`logs/latest/eval.log`), including worker logs
+- `push` — upload the run to the Prime Intellect platform as it progresses (default; `--no-push` keeps it local). Hosted evaluations also pass `run.attach <evaluation-id>` to stream results into a run the platform already created rather than opening a new one; local runs do not need to set this
 
 ## Resuming evaluations
 
-Re-run the saved resolved config with `--resume`:
+To resume an interrupted or partially failed evaluation, re-run its saved resolved config with `--resume`:
 
 ```bash
 uv run vf-eval @ <run-dir>/configs/resolved/eval.json --resume
 ```
 
-Complete, successful episodes are kept. Missing, failed, or malformed episodes
-run again in the same directory. The config must match the saved run.
+Completed episodes are preserved in the run directory, while missing, errored, or malformed episodes run again in place. To discard the existing run directory and start over instead, pass `--clean` (or write to a new directory to keep the previous results).
 
-Keep the installed taskset, code, and dataset versions fixed too. Tasks are
-matched by a hash of their data; matching config alone does not ensure matching
-datasets. `--clean` deletes the selected run directory. Use a new directory to
-keep the previous results.
-
-When identical task data appears more than once, completed episodes fill each
-occurrence's `num_rollouts` slots in order. A stable `Task.key` does not replace
-hash matching: changing task data, including its assigned `idx`, makes it a new
-task for resume.
+Because `--resume` matches completed episodes to tasks by their `TaskData` hash (filling each occurrence's `num_rollouts` slots in order when identical task data appears more than once), the installed taskset, code, and dataset must stay unchanged across runs. Overriding `Task.key` does not replace hash matching: any change to `TaskData`, including its assigned `idx`, produces a new hash and causes the task to run again.
 
 ## Timeouts and retries
 
-Retries of the whole agent run are off by default. To enable them:
+Full-rollout retries are disabled by default (separate from HTTP retries inside the provider SDK). You can configure retry budgets per error type under `[env.agent.retries]`, or under `[env.retries]` for environments that manage shared resources such as Harbor Compose:
 
 ```toml
 [env.agent.retries]
@@ -161,42 +120,26 @@ type = "SandboxError"
 max_retries = 2
 ```
 
-Rules are checked in order; all fields in a rule must match. The first matching
-rule sets that error's retry budget. Each rule has its own budget across attempts;
-unmatched errors use the default `max_retries` budget. A zero or exhausted budget
-does not fall through to later rules, but another error can still trigger a retry.
-A retry starts a new attempt from the beginning. Provider SDK retries are separate.
-Environments that manage shared resources, such as Harbor Compose, use
-`env.retries`. See [runtimes](runtimes.md)
-for stage timeouts, token limits, and network policy, and
-[trace inspection](debugging.md) for validation, failure diagnosis, and replay.
+When an agent rollout fails, `rules` are checked in order and the first rule where all fields match sets the retry budget for that error; unmatched errors use the top-level `max_retries` budget. Each retry starts a fresh attempt from the beginning. To bound how long individual stages or rollouts can run, configure stage timeouts and token limits on the [runtime](runtimes.md); see [validation and trace inspection](debugging.md) for diagnosing failed episodes.
 
 ## Disabling tools
 
-Most harnesses accept a `disabled_tools` list:
+Most harnesses expose a `disabled_tools` list that you can use to turn off specific built-in tools:
 
 ```toml
 [env.agent.harness]
 disabled_tools = ["shell_tool"]
 ```
 
-Check the harness's docs for exact tool names and whether it supports disabling them.
+Tool names and support for disabling them depend on the harness; check the harness documentation for the exact names it accepts.
 
 ## Skills
 
-Harnesses that support `SKILL.md` files, such as Claude Code and Codex, accept a
-`skills` list. Give a local skill folder to upload it. Use `{runtime = "..."}`
-to copy skills already inside the runtime into the program's skill directory:
+Harnesses whose underlying program natively supports `SKILL.md` files (such as Claude Code and Codex) accept a `skills` list. Passing a local skill directory uploads it to the runtime, while `{runtime = "..."}` copies skills from a directory already inside the runtime into the harness's skill discovery path:
 
 ```toml
 [env.agent.harness]
 skills = [{runtime = "/opt/skills"}, "path/to/my-skill"]
 ```
 
-Tasks can also set `TaskData.skills`, for example
-`skills=[{"runtime": "/opt/skills"}]`. Task skills are installed first, then
-harness skills. Later files overwrite earlier files with the same path. Each run
-gets its own copy. Installation happens after task setup; a missing source
-directory fails the run.
-
-The run fails if skills are configured but the harness does not support them.
+Tasks can also declare skills via `TaskData.skills` (for example, `skills=[{"runtime": "/opt/skills"}]`). Task skills are installed first, followed by harness skills, with later files overwriting earlier ones at the same path. Each rollout gets its own copy after task setup completes, and missing source directories (or configuring `skills` on a harness that does not support them) will fail the run.

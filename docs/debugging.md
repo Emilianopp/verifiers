@@ -1,9 +1,10 @@
 # Validation and trace inspection
 
-Start with the check closest to the failure. A config check, setup check, and
-full agent run test different things.
+verifiers includes CLI tools to validate task setup and scoring before spending model tokens (`vf-validate`, `vf-debug`), inspect saved episodes (`WireEpisode`), and re-score finished runs offline (`vf-replay`).
 
 ## Before running an agent
+
+Before launching a full evaluation, you can verify your configuration, task setup, reference solutions, and scoring logic directly against a runtime:
 
 ```bash
 uv run vf-eval my-task --dry-run
@@ -13,46 +14,27 @@ uv run vf-validate my-task --runtime.type docker -n 1 --only-noop
 uv run vf-debug my-task --runtime.type docker -n 1 --command 'pwd && ls -la'
 ```
 
-`--dry-run` loads and saves config. It does not load dataset rows or check that
-images, credentials, or services work.
+`vf-eval --dry-run` resolves and saves the configuration without loading dataset rows or starting sandboxes.
 
-`vf-validate` starts the selected runtime and runs task setup. With `--only-gold`,
-it also calls `Task.validate(runtime)` to check a known answer or solution. That
-method returns `True` for valid, `False` for invalid, or `None` if no check exists.
-`None` is reported as `unchecked`, not a pass.
+`vf-validate` boots the configured runtime and runs task checks without an agent:
 
-`--only-noop` runs setup, finalization, and scoring without an agent changing the
-task. A reward of at least 1.0 is flagged as an invalid task because it already
-passes untouched. Lower rewards are recorded and pass this check; no reward is
-reported as `unchecked`. Inspect partial rewards too if they should require work.
+- `--only-setup` runs `Task.setup(runtime)` to verify that containers, files, and background services start cleanly.
+- `--only-gold` runs `setup` followed by `Task.validate(runtime)` to check a reference answer or solution. `validate` returns `True` (valid), `False` (invalid), or `None` when the task defines no gold check (reported as `unchecked` rather than a pass).
+- `--only-noop` runs `setup`, `finalize`, and task scoring on the untouched environment. Any task that already scores `1.0` or higher with no agent actions is flagged as `invalid` (lower partial rewards pass the check and are recorded in the results, while tasks with no reward are marked `unchecked`).
 
-Without an `--only-*` flag, gold and noop checks run in separate runtimes.
-`--only-setup` just checks setup. Validation does not run the harness or apply
-its execution network restrictions. The noop check includes configured judges,
-so it can call models.
+When you run `vf-validate` without an `--only-*` flag, it runs both the gold and noop checks in separate runtimes. Because validation runs directly against the task rather than through a harness or `Env`, it does not apply harness network restrictions, transfer artifacts, or invoke `stage_verifier`. If your gold check relies on private tests, call your staging helper inside `Task.validate`, and use a real `vf-eval` run to test the full isolated-grading lifecycle.
 
-Validation also skips the environment, artifact transfer, and `stage_verifier`.
-If a gold check needs private tests, call staging from `validate`. Check the full
-isolated-grading lifecycle with an evaluation; validation alone cannot cover it.
-
-Validation writes `results.jsonl`, `summary.json`, `logs/validate.log`, and
-`configs/resolved/validate.json`. Resume missing, errored, or timed-out checks with:
+Validation writes `results.jsonl`, `summary.json`, `logs/validate.log`, and `configs/resolved/validate.json`. You can re-run missing, errored, or timed-out checks in place with `--resume`:
 
 ```bash
 uv run vf-validate @ <run-dir>/configs/resolved/validate.json --resume
 ```
 
-`vf-debug` runs a shell command or `--script-path check.sh` after task setup, then
-removes the runtime. Both tools use `--taskset.*` and `--runtime.*`, rather than
-eval's `--env.taskset.*` and `--env.agent.runtime.*`. Both accept
-[`--select.*`](tasksets.md#selecting-tasks) to choose tasks. They run setup code
-and may create paid sandboxes; validation may also call judges.
+For interactive troubleshooting, `vf-debug` runs `Task.setup` and then executes a one-off shell `--command` or uploaded `--script-path check.sh` inside the runtime before tearing it down. Because neither `vf-validate` nor `vf-debug` wraps the task in an `Env`, both take top-level `--taskset.*` and `--runtime.*` flags (rather than `vf-eval`'s `--env.taskset.*` and `--env.agent.runtime.*`), alongside [`--select.*`](tasksets.md#selecting-tasks) to filter tasks. Note that both commands execute real task setup (which may spin up paid sandboxes), and `vf-validate`'s noop check will call any configured judges.
 
 ## Read saved episodes
 
-Each line of `traces.jsonl` holds one **episode**, which can contain several
-agent traces. Read it with `WireEpisode`; this does not require the original
-taskset or harness to be installed:
+Each line in `traces.jsonl` is a serialized **episode** containing one or more agent traces. You can parse it with `WireEpisode` without needing the original taskset or harness package installed:
 
 ```python
 from pathlib import Path
@@ -69,42 +51,25 @@ with Path("<run-dir>/traces.jsonl").open() as saved:
                 print(trace.errors)
 ```
 
-Read the task data and agent settings alongside the messages, tool results,
-`stop_condition`, `timing`, and `errors`. Useful fields include:
+Each `trace` records the task metadata and agent config alongside the message history, tool outputs, `stop_condition`, `timing`, and `errors`:
 
-- `trace.branches`: conversation paths, reconstructed from saved messages.
-- `trace.last_reply`: the final assistant reply, also computed from messages.
-- `trace.calls`: each model call's settings, token usage, timing, and provider errors.
-- `trace.info["judge_calls"]`: recorded judge calls. Their token usage is included through `extra_usage`.
+- `trace.branches` and `trace.last_reply` reconstruct the conversation paths and final assistant response from the saved messages (both are computed Python properties on the loaded object rather than separate keys in the raw JSON).
+- `trace.calls` lists every model call with its sampling parameters, token usage, latency, and any provider errors.
+- `trace.info["judge_calls"]` captures requests and responses from task judges, whose token usage is also rolled into `extra_usage`.
 
-`branches` and `last_reply` are Python properties, not separate fields in the JSON.
+Each named entry in `trace.rewards` stores a `score` and `weight`, and `trace.reward` is the sum of their products. A `None` reward or metric indicates that the hook did not run (for example, after an earlier error), not that the model scored zero. Because runtime-only state (`trace.state`) and artifact archives transferred to an isolated verifier are not persisted to `traces.jsonl`, store any evidence you want to inspect after the run in `trace.info` during `finalize`.
 
-Each named reward has a `score` and `weight`; `trace.reward` sums their products.
-A `None` reward or metric means it was not scored, not that it scored zero.
-`trace.state` is not saved. Put evidence needed later in `trace.info` during
-`finalize`. Archives transferred to a separate verifier are not saved in traces.
-
-Report wrong answers, runs cut short by limits, and execution errors separately.
-Check `logs/latest/eval.log` for the first failure before attributing a low score
-to the model. An episode can fail before producing any traces, so count episodes
-as well as traces.
+When diagnosing low scores, check `logs/latest/eval.log` as well as `traces.jsonl` to distinguish model mistakes from rollouts cut short by limits or infrastructure errors; an episode that fails during setup or environment initialization may not produce any agent traces at all.
 
 ## Re-score without rerunning the agent
+
+`vf-replay` re-computes offline metrics, rewards, and judge scores against a finished run's saved transcripts without re-running the agent:
 
 ```bash
 uv run vf-replay <run-dir> --dry-run
 uv run vf-replay <run-dir> -n 3 -r 2
 ```
 
-Replay loads the saved config and task data, clears the copied scores, and runs
-scoring methods that need only saved data. It can also call configured judges.
-It writes a new run and keeps the original unchanged.
+Replay loads the source run's config and saved `TaskData`, clears the copied scores, and runs any scoring hooks and judges that only depend on the saved `Trace` (writing the results to a new output directory so the original run is never overwritten). Use `-n` to limit how many saved traces are re-scored, `-r` to score each trace multiple times (useful for measuring judge variance), and `--taskset.task.*` to override scoring settings (for example, `--taskset.task.judges.0.model` swaps the model on the first configured judge).
 
-`-n` selects traces; `-r` repeats scoring to check how much judge results vary.
-Override task settings with `--taskset.task.*`. For example,
-`--taskset.task.judges.0.model` changes the first configured judge's model.
-
-Judge calls can incur charges. Replay cannot recreate a removed sandbox: it
-skips scores that need a runtime and does not rerun setup or finalization. It
-requires `SingleAgentEnv` or a subclass; scoring traces separately cannot
-reproduce another environment's interactions or scoring.
+Because the original sandboxes are already gone, `vf-replay` skips `setup`, `finalize`, and any scoring hooks that request a `runtime`. It only supports runs produced by `SingleAgentEnv` (or its subclasses), since multi-agent environments score interactions across traces rather than per trace.

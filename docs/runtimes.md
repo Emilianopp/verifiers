@@ -1,22 +1,23 @@
 # Runtimes
 
-A runtime is where the agent program and task commands run. Select it with
-`--env.agent.runtime.type`; the default is `prime`.
-
-Python hooks such as task `setup` run on the evaluator. Use their `runtime`
-parameter to read files or run commands in the sandbox. A plain
-`Path(...).read_text()` reads a file on the evaluator's machine.
+A runtime provides the execution environment where the agent harness and task
+commands run. You can choose the backend with `--env.agent.runtime.type` (which
+defaults to `prime`). Because Python task hooks like `setup`, `finalize`, and
+`@vf.reward` always execute in the evaluator process, use their `runtime`
+parameter whenever you want to read files or run commands inside the sandbox;
+calling `Path(...).read_text()` directly reads from the evaluator host instead.
 
 ## Capability matrix
 
-These are the features exposed by the Verifiers runtime adapters. All runtimes
-support commands, file reads and writes, background services, and live processes.
+Every runtime adapter in verifiers supports running commands, reading and
+writing files, starting background services, and managing live processes, but
+they differ in how they handle isolation, hardware resources, and networking:
 
 | Capability | `subprocess` | `docker` | `podman` | `apptainer` | `prime` | `modal` | `e2b` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Runs on | Evaluator host | Local container engine | Local container engine | Apptainer host | Remote sandbox | Remote sandbox | Remote sandbox |
 | Task image and container-required tasks | No | Yes | Yes | Yes | Yes | Yes | Public Debian-based image |
-| `cpu` / `memory` settings | No | Yes | Yes | Yes | Yes | Yes | Yes; template limits below |
+| `cpu` / `memory` settings | No | Yes | Yes | Yes | Yes | Yes | Yes |
 | Enforced `disk` size | No | No | No | No | Yes | No | No |
 | GPU selection | No setting | Count; checks requested type | NVIDIA CDI device count | All accessible NVIDIA GPUs | Type and count | Type and count; no GPUs with `vm = true` | No setting |
 | Execution-time allowlist | No | Yes | Yes | No | Hosts | HTTPS domains on port 443 | Hosts, IPs, CIDRs |
@@ -26,45 +27,45 @@ support commands, file reads and writes, background services, and live processes
 | Artifact transfer and isolated grading | No | Yes | Yes | Yes | Yes | Yes | Yes |
 | Harbor Docker Compose | No | Yes, with conditions below | No | No | Yes, in a VM | Yes, in an experimental VM | No |
 
-Local CPU, memory, and GPU settings require support from the host and container
-engine. Docker GPU selection needs the NVIDIA container toolkit; Podman needs
-NVIDIA CDI devices. Apptainer passes CPU and memory flags to its CLI, and `gpu`
-enables `--nv`; its GPU count and type are not enforced. Local containers,
-Modal, and E2B accept `disk` as an advisory request.
+**Local runtimes (`subprocess`, `docker`, `podman`, `apptainer`)**:
+`subprocess` runs commands directly on the evaluator host with full access to
+local files, processes, and networking. It is useful for fast local debugging
+with lightweight harnesses like `bash` or `null`, but tasks that set
+`Task.NEEDS_CONTAINER = True`, specify a `TaskData.image`, enforce network
+policies, or use third-party CLI harnesses require a container runtime instead.
+For local containers, CPU, memory, and GPU limits depend on the host and
+container engine: Docker GPU pass-through requires the NVIDIA Container Toolkit,
+Podman requires NVIDIA CDI devices, and Apptainer passes `--nv` to expose host
+GPUs without enforcing a specific device count or model. Apptainer also shares
+the host network, so it cannot run tasks with egress restrictions.
 
-`subprocess` can access the evaluator's files, processes, devices, and network.
-Apptainer also shares the host network. Tasks that require network restrictions
-are rejected on these two runtimes. Use `subprocess` for trusted local development
-with a compatible harness, such as `bash` or `null`.
+**Remote sandbox runtimes (`prime`, `modal`, `e2b`)**:
+Remote sandboxes are built for high-concurrency evaluation and RL training.
+`prime` uses your Prime Intellect credentials and is the only backend that
+enforces hard `disk` limits (on other container runtimes, `disk` is treated as
+an advisory request). `modal` and `e2b` require installing their respective
+optional extras (`modal` or `e2b`) and configuring provider credentials. On
+Modal, standard sandboxes support GPU requests, whereas its VM mode (`vm = true`)
+is CPU-only. On E2B, the adapter builds and caches a sandbox template from a
+public Debian-based image along with the requested CPU and memory settings;
+network allowlists accept wildcard hostnames, IPs, and CIDRs (without schemes or
+ports), while blocklists accept IPs and CIDRs only.
 
-Modal requires the `modal` extra and Modal credentials. Its ordinary sandboxes
-support GPU requests; its VM backend is CPU-only. Prime uses Prime credentials.
-GPU availability depends on the provider or host.
-
-E2B requires the `e2b` extra and E2B credentials. It builds and caches a template
-from the public Debian-based image, CPU count, and memory setting. CPU must be
-one or an even whole number; memory must be at least 0.125 GB and convert to an
-even whole number of MB. The adapter requests a 24-hour sandbox lifetime, so
-the account must allow that duration. E2B allow rules accept wildcard hosts,
-IPs, and CIDRs, but no URL schemes, ports, or paths. Block rules accept only
-IPs and CIDRs.
-
-[Harbor Compose](harbor.md#docker-compose) supports CPU tasks on Docker, Prime,
-and Modal. Local Docker requires unrestricted networking and `--env.trust-compose`.
-Modal requires access to its experimental VM backend and `network_access = true`.
-Ordinary runtime networking support does not imply the same support for Compose.
-
-Harness capabilities such as MCP, image input, and conversation resume are
-separate; see [harnesses](harnesses.md). For separate agent and grading sandboxes,
-see [building environments](building-environments.md#separate-agent-and-grading-sandboxes).
-
-Set `Task.NEEDS_CONTAINER = True` when a task needs its own filesystem or runs
-untrusted code. Setting `TaskData.image` also requires a container. Most
-third-party harnesses require one too; they cannot use `subprocess`.
+**Multi-container Compose tasks and harness features**:
+Multi-container [Harbor Docker Compose](harbor.md#docker-compose) tasks are
+supported for CPU workloads on `docker` (with unrestricted networking and
+`--env.trust-compose`), `prime` (inside a VM), and `modal` (using its
+experimental VM backend with `network_access = true`). Runtime capabilities are
+orthogonal to agent harness capabilities like MCP tool support, image inputs, or
+conversation resumption; see [harnesses](harnesses.md) for harness features and
+[building environments](building-environments.md#separate-agent-and-grading-sandboxes)
+for running separate solver and grading sandboxes.
 
 ## Images, resources, and timeouts
 
-Put each task's requirements in `TaskData`:
+Tasks can declare their own container image, working directory, hardware
+resources (CPU cores, memory in GB, and disk in GB), phase timeouts (in
+seconds), and network rules directly on `TaskData`:
 
 ```python
 data = vf.TaskData(
@@ -77,43 +78,44 @@ data = vf.TaskData(
 )
 ```
 
-The task's image overrides `runtime.image`. The task's workdir and resources are
-used when the corresponding runtime settings are still at their defaults.
-Non-default runtime settings win for those fields.
+When resolving a sandbox configuration, `TaskData.image` takes precedence over
+`runtime.image` so individual tasks in a dataset can bring their own containers.
+By contrast, `TaskData.workdir` and `TaskData.resources` act as task-specific
+defaults: they apply when the runtime config leaves those fields at their
+default values, while explicit runtime overrides (such as
+`--env.agent.runtime.cpu 4`) take priority. On `prime`, setting
+`runtime.checkpoint` boots the sandbox from an existing filesystem checkpoint
+instead of a container image, replacing both `runtime.image` and `TaskData.image`
+and preserving the checkpoint's disk size while still applying your CPU and
+memory settings.
 
-CPU is in cores, memory and disk in GB, and timeouts in seconds. Prime enforces
-disk limits; local containers, Modal, and E2B treat them as requests only.
+Timeouts and token budgets can be tuned at evaluation time under `env.agent`:
 
-On Prime, `runtime.checkpoint` starts from an existing durable filesystem
-checkpoint. It replaces the image, including a task's image override, and keeps
-the checkpoint's disk size. CPU and memory settings still apply.
-
-Limits under `env.agent` apply to each agent rollout: `max_turns`,
-`max_input_tokens`, `max_output_tokens`, and `max_total_tokens`.
-`sampling.max_tokens` limits each model response. Token limits are checked
-between turns, so the turn that exceeds a limit can finish.
-
-Under `env.agent.timeout`, set `setup`, `rollout`, `finalize`, or `scoring` to
-override the task's timeouts. Unset values use the task's timeout, or no limit
-if the task has none. Explicit timeouts must be greater than zero.
+- **Phase timeouts**: set `setup`, `rollout`, `finalize`, or `scoring` under `env.agent.timeout` to override the corresponding `TaskData.timeout` values (any phase left unset falls back to the task's timeout, or runs without a limit if neither is set).
+- **Turn and token budgets**: set `max_turns`, `max_input_tokens`, `max_output_tokens`, or `max_total_tokens` on `env.agent` to cap an entire agent rollout, and `sampling.max_tokens` to cap each individual model response. Rollout token budgets are checked between turns, so the turn that crosses a threshold completes before the rollout stops.
 
 ## Execution users
 
-Set `TaskData.agent_user` to an existing account in the image on Docker, Podman,
-or Prime. Its home directory must be writable. Task setup runs as the runtime's
-default user, then harness setup, the agent program, and colocated task tools
-run as `agent_user`. Finalization, scoring, and artifact collection use the
-runtime's default user. Other runtimes reject `agent_user`.
+On `docker`, `podman`, and `prime`, you can set `TaskData.agent_user` to run the
+agent under an existing non-root user account in the container image (with a
+writable home directory). Task `setup` still runs as the container's default
+user, after which harness setup, the agent process itself, and any colocated
+task tools execute as `agent_user`. Once the agent finishes, `finalize`,
+scoring, and artifact collection switch back to the default user.
 
-Prepare system dependencies during image creation or task setup. Files created
-there keep their ownership: give the agent permission to read its inputs and
-write its workdir and outputs. Selecting a user does not create an account or
-change file ownership. Use a fresh [grading sandbox](building-environments.md#separate-agent-and-grading-sandboxes)
-when private tests must stay outside the agent's runtime.
+Because setting `agent_user` does not create the Unix account or change existing
+file ownership, install system packages and create directories during image
+build or task `setup`, then grant `agent_user` permission to read its inputs and
+write to its working directory and output paths before `setup` returns. Running
+as a non-root user inside the same container is not a substitute for isolated
+grading; if a task uses private tests or sensitive grading assets, stage them in
+a separate [grading sandbox](building-environments.md#separate-agent-and-grading-sandboxes).
 
 ## Runtime operations
 
-Use `runtime` in task hooks and scoring:
+Task lifecycle hooks (`setup`, `finalize`, `stage_verifier`) and `@vf.reward` /
+`@vf.metric` methods can access the active sandbox by declaring a
+`runtime: vf.Runtime` parameter:
 
 ```python
 async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
@@ -129,34 +131,34 @@ async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
     ).decode()
 ```
 
-- `run(argv, env)` returns the exit code, stdout, and stderr in a `ProgramResult`. Check the exit code; a failed command does not raise automatically.
-- `read` returns bytes; `write` takes bytes.
-- `run_uv_script(script, args, env)` runs Python source with inline dependency metadata. Install dependencies during setup if the agent will run offline.
-- `run_background(argv, env, log)` starts a service. Check that it is ready before using it.
+The `vf.Runtime` interface provides a small set of methods for interacting with
+the sandbox:
 
-Ordinary container runtimes replace the image entrypoint with a process that
-keeps the container alive. Start required services yourself. Harbor
-[Compose](harbor.md#docker-compose) keeps service entrypoints.
+- `run(argv, env)` executes a command and returns a `ProgramResult` containing `exit_code`, `stdout`, and `stderr`. Nonzero exit codes do not raise automatically, so check `result.exit_code` when a command must succeed.
+- `read(path, max_bytes=...)` and `write(path, data)` transfer raw `bytes` between the evaluator and the sandbox filesystem.
+- `prepare_uv_script(script)` and `run_uv_script(script, args, env)` prepare and execute self-contained Python scripts that declare PEP 723 inline dependencies.
+- `run_background(argv, env, log)` launches a background service inside the sandbox. Because standard container runtimes replace the image entrypoint with a keep-alive process (unlike Harbor [Docker Compose](harbor.md#docker-compose), which preserves service entrypoints), use `run_background` in `setup` to start any daemons the image would normally launch and verify they are ready before returning.
 
-Use `Task.runtime_env()` to pass environment variables without saving them in
-task data. For harness credentials, use `harness.forward_env = ["TOKEN_NAME"]`
-so the config stores the variable's name, not its secret value. Programs in the
-runtime can read these variables. Keep judge-only credentials on the evaluator.
+To pass environment variables into sandbox commands without serializing them
+into `TaskData`, override `Task.runtime_env()`. For credentials needed by an
+agent harness, set `harness.forward_env = ["TOKEN_NAME"]` so saved configs
+record only the variable name rather than the secret value. Processes inside the
+sandbox can read forwarded variables, so keep judge-only credentials on the
+evaluator host.
 
 ### Packaged grader scripts
 
-Dependencies belong where the code runs:
+Dependencies added to your environment package's `pyproject.toml` (via
+`uv add --project environments/<package> ...`) are installed on the evaluator
+for dataset loading and Python hooks, not inside the agent or grading
+containers. Libraries and CLI tools that the agent needs belong in the task
+image or `setup`, while dependencies for a sandboxed Python grader can either be
+baked into the verifier image or declared via PEP 723 inline script metadata.
 
-| Code | Install dependencies in |
-| --- | --- |
-| Dataset loaders, task hooks, and scoring helpers imported by the evaluator | The environment package's `pyproject.toml`, using `uv add --project environments/<package> ...` |
-| Agent programs and commands | The agent image or task/harness setup |
-| A sandboxed Python grader | The grader image or a script with PEP 723 inline metadata |
-
-Installing a package on the evaluator does not install it in a runtime. Package
-grader source alongside the taskset and load it with `importlib.resources`.
-For isolated verification, these methods on the task prepare and run a private
-`check.py` that accepts an output path and prints JSON such as `{"score": 1.0}`:
+If you bundle a self-contained grading script alongside your taskset and load
+its bytes with `importlib.resources`, you can pre-install its inline
+dependencies with `runtime.prepare_uv_script` and run it with
+`runtime.run_uv_script`:
 
 ```python
 import json
@@ -177,29 +179,29 @@ async def correct(self, runtime: vf.Runtime) -> float:
     return float(json.loads(result.stdout)["score"])
 ```
 
-Put the grader's dependencies in its inline metadata. `prepare_uv_script`
-installs them before execution-time network restrictions start. Passing the
-same script bytes to `run_uv_script` reuses the prepared interpreter. For a
-public checker used in the solver's runtime, prepare it in task `setup` instead.
-Do not stage private tests there. If grading executes agent-written code, set
-`NEEDS_CONTAINER = True`; a Python hook or thread on the evaluator provides no
-isolation.
-
-Have the grader return a zero score for incorrect submissions, including
-candidate failures the benchmark treats as wrong answers. Reserve a nonzero
-grader exit for failures that prevent a valid grade, and raise for those so
-they remain visible as scoring errors.
+Calling `prepare_uv_script` during `stage_verifier` (or during `setup` for a
+public checker that runs inside the solver sandbox) installs the script's
+PEP 723 dependencies before execution-time network restrictions lock down the
+container. Passing the identical script bytes to `run_uv_script` during scoring
+then reuses the prepared interpreter offline. Whenever your grader imports or
+executes code written by the agent, run it inside a container
+(`NEEDS_CONTAINER = True`) rather than in a Python hook on the evaluator. Have
+the grader script exit `0` and emit a `0.0` score when the submission is wrong
+or crashes, and reserve nonzero exit codes (raising in `@vf.reward`) for
+failures that prevented a valid grade from being computed.
 
 ## Network policies
 
-Task `network_allow` / `network_block` combine with runtime `allow` / `block`:
+Task-level rules (`TaskData.network_allow` and `TaskData.network_block`) combine
+with runtime-level rules (`runtime.allow` and `runtime.block`) to control what
+the sandbox can reach once the agent starts:
 
-- `["*"]` adds no restriction; the other policy still applies.
-- `[]` allows only connections needed by verifiers, including model requests and MCP.
-- If both sides list allowed destinations, a destination must be allowed by both.
-- Blocklists combine. A nonempty allowlist of specific destinations cannot be used with a blocklist; validation rejects that combination.
+- `["*"]` adds no restriction of its own, deferring to whichever policy is set on the other side.
+- `[]` blocks external egress and permits only connections required by verifiers (such as model API interception and MCP tool traffic).
+- When both the task and the runtime specify allowlists, a destination must match both lists; when both specify blocklists, the blocked destinations are merged. (A specific destination allowlist cannot be combined with a blocklist.)
 
-For example, to allow the web except a dataset host:
+For example, to give the agent general internet access while blocking Hugging
+Face domains:
 
 ```toml
 [env.agent.runtime]
@@ -208,19 +210,20 @@ allow = ["*"]
 block = ["huggingface.co", "*.huggingface.co"]
 ```
 
-Task and harness setup runs before restrictions start. The restrictions normally
-remain active through finalization and scoring. Harbor's shared verifier
-[reopens the network for grading](harbor.md#network-policies). Policies apply
-inside the runtime, not to Python hooks on the evaluator or tools in a separate runtime. Set
-`colocated = true` for a task tool to share the agent's files and network rules.
+Network policies take effect after task and harness `setup` complete (so `setup`
+can still download packages or assets) and remain active through `finalize` and
+scoring (except in Harbor's shared verifier mode, which
+[reopens network access during grading](harbor.md#network-policies)). On Modal,
+keep `network_access = true` when using an allowlist so `setup` stays online;
+setting `network_access = false` cuts off networking during `setup` as well.
 
-Restricted runs add a notice to the agent's system prompt (or first user message
-when the harness cannot append a system message). Set
-`--no-env.agent.network-notice` to omit this notice when the benchmark requires
-an exact prompt. This does not change the network policy.
-
-Provider-hosted tools run outside the sandbox. Verifiers passes supported
-restrictions to web tools or disables tools it cannot restrict; see
-[Harbor network policies](harbor.md#network-policies).
-On Modal, use `network_access = true` with an allowlist to keep setup online.
-`network_access = false` blocks setup too.
+These egress rules govern processes inside the sandbox (including task tools
+configured with `colocated = true`), not Python hooks running on the evaluator
+or tools running in separate containers. For provider-hosted server tools that
+execute outside the sandbox, verifiers forwards supported domain restrictions
+to web search tools and disables any provider tools it cannot constrain (see
+[Harbor network policies](harbor.md#network-policies)). By default, restricted
+runs also append a short notice to the agent's system prompt (or first user
+message when the harness cannot append a system prompt) explaining the network
+policy; pass `--no-env.agent.network-notice` if a benchmark requires the
+unmodified prompt verbatim.

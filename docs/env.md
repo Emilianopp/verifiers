@@ -1,25 +1,18 @@
 # Environments
 
-An `Env` decides which agents run and in what order. Each completed agent run
-produces a trace. The environment collects those traces in an `Episode`.
+An `Env` defines the control flow across one or more `Agents` for a single task. Each completed agent run produces a `Trace`, and the environment collects every trace from the run into an `Episode`.
 
-Choose a built-in environment with `--env.id`:
+If your taskset package does not export a custom `Env` and you don't specify `--env.id`, verifiers defaults to `SingleAgentEnv`, which runs a single agent on each task. You can also select one of the built-in environments with `--env.id`:
 
-| ID | What it does |
-| --- | --- |
-| `best-of-n` | Runs several independent attempts, marks the best reward, and records whether any attempt passed. |
-| `agentic-judge` | Runs a solver, then a judge agent in a fresh runtime. |
-| `shared-agentic-judge` | Runs a solver, then a judge agent in the same runtime. |
-| `user-sim` | Runs a conversation between an assistant and a model playing the user. |
-| `isolated-verifier` | Runs one solver, then scores its saved files in a fresh runtime without a judge model. |
-
-Without an explicit ID, verifiers uses the environment exported by the taskset
-package. If none is exported, `SingleAgentEnv` runs one agent on each task.
+- `best-of-n` (`BestOfNEnv`): runs `n` independent attempts on the same task, marks which attempt achieved the highest reward (`best`), and records whether any attempt crossed a success threshold (`pass_at_n`), which is useful for rejection sampling and pass@k evaluation.
+- `agentic-judge` (`IsolatedAgenticJudgeEnv`): runs a solver agent first, then spins up a judge agent in a fresh runtime to evaluate the result.
+- `shared-agentic-judge` (`SharedAgenticJudgeEnv`): runs a solver agent followed by a judge agent that reuses the solver's runtime.
+- `user-sim` (`UserSimEnv`): models the user as a second agent and runs a turn-by-turn conversation between the user simulator and the assistant.
+- `isolated-verifier` (`IsolatedVerifierEnv`): runs a single solver, transfers only its declared artifacts into a fresh container runtime, and runs deterministic task scoring there without a judge model.
 
 ## Custom control flow
 
-Add an `AgentConfig` field for each agent role. Its name becomes the config path,
-such as `--env.solver.model` and `--env.solver.harness.id`:
+To write a custom environment, subclass `vf.Env` and declare an `AgentConfig` field on your `EnvConfig` for each agent role. The field name becomes the CLI and TOML config prefix, such as `--env.solver.model` and `--env.solver.harness.id`:
 
 ```python
 import verifiers.v1 as vf
@@ -41,21 +34,13 @@ class AttemptsEnv(vf.Env[AttemptsConfig]):
             trace.record_metric("best", float(trace.reward == best))
 ```
 
-Export the environment alongside the taskset in the package's `__all__`.
-`run(task, agents)` returns nothing: completed agent runs are added to the
-episode automatically. Unless configured, roles use the evaluation's model and
-client and the taskset's default harness. Read the role from `trace.agent.name`.
+`Env.run(task, agents)` receives the task and pre-initialized agents and orchestrates the episode; it returns `None` because every completed `agent.run(task)` call automatically appends its trace to the episode (with `trace.agent.name` set to the role name). Unless overridden on the role, each agent inherits the evaluation's model and client and the taskset's default harness. Export your `Env` subclass alongside the taskset in your package's `__all__` so verifiers uses it automatically.
 
-Use `finalize(task, episode)` for scores that compare several traces. The agents'
-runtimes have already been released, so save any needed evidence in the traces.
-
-To exclude a role from training, set it in `setup(agents)`, for example
-`agents.judge.trainable = False`.
+When you need episode-level metrics that compare traces across runs, such as marking the best attempt above, implement `finalize(task, episode)`. Because the agents' runtimes have already been released by the time `finalize` runs, any evidence needed for cross-trace scoring should be recorded on the traces during `run`. If an environment includes helper roles that shouldn't be trained (such as a judge or user simulator), mark them in `setup(agents)` with `agents.judge.trainable = False`.
 
 ### Role defaults
 
-Set a role's default harness on its `AgentConfig`. For example, an answer-only
-environment can use the `null` harness by default:
+You can customize a role's default settings directly on its `AgentConfig` field. For example, an answer-only environment that does not need shell tools can default its agent to the `null` harness:
 
 ```python
 class AnswerConfig(vf.EnvConfig):
@@ -67,17 +52,11 @@ class AnswerEnv(vf.Env[AnswerConfig]):
         await agents.agent.run(task)
 ```
 
-Export `AnswerEnv` alongside the taskset. Declare roles with default instances,
-as above. CLI and TOML overrides merge into those defaults; a user can select
-another harness with `--env.agent.harness.id bash`. If the default depends on a
-task setting, type the config's `taskset` field with that taskset's config class
-and choose a harness in an `after` model validator only when `agent.harness`
-is unset. An explicit selection should remain under the user's control.
+CLI flags and TOML settings merge into those defaults, so a user can still switch harnesses at runtime with `--env.agent.harness.id bash`. If a role's default harness depends on a taskset setting, type the config's `taskset` field with that taskset's config class and choose a harness in a Pydantic `after` model validator only when `agent.harness` was left unset, keeping explicit user overrides intact.
 
 ### Scripted conversations
 
-Keep all messages in one interaction when a task has a fixed sequence of user
-turns. Store the first message in `prompt` and the rest in a task data field:
+When a task has a fixed sequence of follow-up user messages (as opposed to an LLM-driven user simulator, where `user-sim` fits better), you can keep the entire exchange inside a single rollout with `agent.interaction(task)`. Store the opening message in `TaskData.prompt` and the follow-up turns in a field on your `TaskData` subclass:
 
 ```python
 class ConversationData(vf.TaskData):
@@ -94,33 +73,14 @@ class ConversationEnv(vf.SingleAgentEnv):
                 segment = await interaction.turn(message)
 ```
 
-Use a harness that supports conversation resume. The initial bare `turn()` uses
-the task prompt; for `prompt=None`, supply the first message yourself. Each call
-runs one harness segment, which can include several model and tool calls. A
-later call can report termination without consuming its message. Leaving the
-context ends this rollout and runs finalization and scoring, even when the
-script ends before the agent's limits. All segments share one trace and the
-same token and turn budgets.
-
-Record any results needed by task hooks in `interaction.trace.state` or
-`interaction.trace.info` before leaving the context. Use `user-sim` when a model
-should generate the user messages. See [Agent](agent.md) for interaction details.
+This pattern requires a harness that supports conversation resume. Calling `interaction.turn()` with no arguments sends the task's initial `prompt` (or pass a string if `prompt=None`), and each subsequent `turn(message)` runs the next harness segment within the same trace, token budget, and turn budget. Exiting the `async with` block finalizes and scores the rollout even if the script finishes before hitting the agent's turn or token limits. If your task hooks need extra state from the conversation, store it in `interaction.trace.state` or `interaction.trace.info` before leaving the block. See [Agent](agent.md) for more details on driving interactions.
 
 ## Isolated deterministic verification
 
-Use `--env.id isolated-verifier` to grade in a container the solver has never
-touched. It runs one agent and records one trace; grading uses code, not a model.
+Use `--env.id isolated-verifier` (or export `IsolatedVerifierEnv` from your package) when deterministic scoring needs to run in a clean container that the solver has never touched. It is still a single-agent run: verifiers records one solver trace and does not spin up a second model or harness for grading.
 
 ```bash
 uv run vf-eval my-task --env.id isolated-verifier --env.agent.runtime.type docker
 ```
 
-List outputs in `TaskData.artifacts` and prepare private tests in
-`Task.stage_verifier`. The solver runtime is removed before task metrics and
-rewards run against the verifier runtime. By default, the verifier uses the
-solver's resolved runtime settings; `env.verifier.runtime` selects independent
-settings. Model-backed task judges are not supported.
-
-See [building environments](building-environments.md#separate-agent-and-grading-sandboxes)
-for a complete package, lifecycle diagram, separate images and resources,
-artifact requirements, and validation commands.
+Declare the solver outputs that need to be transferred in `TaskData.artifacts` and write any private test files in `Task.stage_verifier`. Once the solver finishes, the environment collects the declared artifacts, tears down the solver's runtime, provisions a fresh verifier container (using the solver's resolved runtime settings by default, or independent settings under `env.verifier.runtime`), restores the artifacts, and runs your `@vf.reward` and `@vf.metric` methods there. Model-backed task judges are not supported in `isolated-verifier`; see [building environments](building-environments.md#separate-agent-and-grading-sandboxes) for a complete package walkthrough, lifecycle diagram, and validation commands.

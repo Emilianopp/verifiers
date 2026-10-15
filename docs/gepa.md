@@ -1,17 +1,14 @@
 # GEPA Prompt Optimization
 
-[GEPA](https://github.com/gepa-ai/gepa) uses a model to improve a system prompt
-based on task scores. Run it with:
+verifiers includes built-in support for [GEPA](https://github.com/gepa-ai/gepa), an algorithm that optimizes a system prompt to maximize downstream reward on a taskset without gradient-based training:
 
 ```bash
 uv run vf-gepa reverse-text
 ```
 
-`vf-gepa` runs tasks, asks a model to review the results and propose better
-prompts, then evaluates those prompts. It changes `TaskData.system_prompt`, not
-the model's weights.
+`vf-gepa` alternates between running rollouts on the taskset and asking a reflection LLM to review the trajectories and propose improvements to `TaskData.system_prompt`.
 
-GEPA uses the same `env`, `client`, and `sampling` settings as evaluation:
+GEPA reuses the same `env` (taskset + agent), `client`, and `sampling` configuration as `vf-eval`, so its `.toml` config looks almost identical:
 
 ```toml
 model = "deepseek/deepseek-v4-flash"
@@ -26,32 +23,24 @@ id = "bash"
 temperature = 1.0
 ```
 
-Check the config with `uv run vf-gepa @ config.toml --dry-run`, then run it with
-`uv run vf-gepa @ config.toml`. CLI flags override TOML values.
+Validate the config with `uv run vf-gepa @ config.toml --dry-run`, and run optimization with `uv run vf-gepa @ config.toml`. CLI flags override `.toml` values when both are present.
 
 ## Common config values
 
-- `model` / `-m` — model that solves the tasks (default: `deepseek/deepseek-v4-flash`, same as eval)
-- `reflection_model` / `reflection_client` — model/endpoint that proposes new prompts (default: reuse `model` / `client`)
-- `select` — [tasks to split into the two groups](tasksets.md#selecting-tasks); shuffling is off by default
-- `num_train` / `num_val` — tasks used to improve prompts and separate tasks used to compare them (defaults: 100 / 50)
-- `max_total_rollouts` — total agent runs allowed (default: 500)
-- `max_concurrent` / `-c` — episodes running at once (default: 128)
+- `model` / `-m` — model for the rollouts under optimization (default: `deepseek/deepseek-v4-flash`, same as `vf-eval`)
+- `reflection_model` / `reflection_client` — teacher model and endpoint that propose new prompts (default: reuse `model` and `client`)
+- `select` — [task selection](tasksets.md#selecting-tasks) applied before splitting into train and validation sets (shuffling is off by default)
+- `num_train` / `num_val` — train tasks for reflection minibatches and validation tasks for scoring candidates on the Pareto frontier (defaults: `100` / `50`)
+- `max_total_rollouts` — total rollouts the run may spend (default: `500`)
+- `max_concurrent` / `-c` — max episodes in flight at once (default: `128`)
 
-Selection happens before the split: the first `num_train` tasks feed reflection,
-and the next `num_val` tasks compare candidate prompts. Those validation tasks
-influence prompt selection, so use a third, untouched group for the final
-baseline comparison. `select.seed` controls shuffling; `seed` controls the
-optimizer's sampling.
+Task selection runs before the train/val split: the first `num_train` selected tasks feed reflection minibatches, and the next `num_val` tasks score candidate prompts (`select.seed` controls task-selection shuffling, while `seed` controls the optimizer's own sampling). Because the validation slice guides prompt selection during optimization, evaluate the final prompt on a separate held-out slice of tasks.
 
 ## Output
 
-Results go to `output_dir / run.dir`, defaulting to
-`outputs/<env>--<model>--<harness>--<short-id>/`, as in eval. The resolved config is
-saved at `configs/resolved/gepa.json`.
-The best system prompt is printed when the run finishes and written to `best_system_prompt.txt` in that folder.
+Results are written to `output_dir / run.dir`, which defaults to `outputs/<env>--<model>--<harness>--<short-id>/` just like `vf-eval`. The resolved config is saved at `configs/resolved/gepa.json`, and when the run finishes, the best system prompt is printed to the console and written to `best_system_prompt.txt`.
 
-Use the saved prompt in evaluation or training:
+You can pass that file directly back into evaluation or training via `--env.taskset.system-prompt`:
 
 ```bash
 uv run vf-eval reverse-text \
@@ -60,13 +49,8 @@ uv run vf-eval reverse-text \
 
 ## Limitations
 
-**Tasksets** — If the taskset has no `TaskData.system_prompt`, set
-`--initial-prompt` to provide a starting prompt. Keep task splits and scoring
-fixed when comparing prompts.
+**Tasksets** — GEPA optimizes `TaskData.system_prompt`. If a taskset bakes instructions into the user `prompt` instead of setting `system_prompt` (e.g. `gsm8k`), pass `--initial-prompt` to seed a starting system prompt explicitly.
 
-**Environments** — Only `SingleAgentEnv` and its subclasses are supported.
-Environments that run several agents or score traces together are rejected.
+**Environments** — Only `SingleAgentEnv` and its subclasses are supported. Multi-agent environments are rejected because GEPA optimizes a single agent's prompt against per-trace rewards.
 
-**Harnesses** — Any evaluation harness works. A harness with
-`APPENDS_SYSTEM_PROMPT` uses the result as a system message. Otherwise it is
-added to the user prompt.
+**Harnesses** — Any evaluation harness works. Harnesses with `APPENDS_SYSTEM_PROMPT` pass the optimized prompt as a system message; otherwise it is folded into the user prompt.

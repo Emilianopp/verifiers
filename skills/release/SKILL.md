@@ -5,12 +5,11 @@ description: Release a stable verifiers version from main to PyPI and GitHub.
 
 # Release Verifiers
 
-Use the next minor version by default. Use a different `vX.Y.Z` version when the
-user specifies one. Complete only the release steps that the user authorizes.
+By default, bump to the next minor `vX.Y.Z` version unless the user specifies a different target version, and only run the release steps the user has authorized.
 
 ## 1. Prepare main
 
-Run the release from the main repository:
+Run the release from a clean checkout of `main`:
 
 ```bash
 git switch main
@@ -19,11 +18,7 @@ git status --short --branch
 VERSION=vX.Y.Z
 ```
 
-Make sure there are no local changes and `$VERSION` has not been released on
-GitHub or PyPI. Check that dependencies in `pyproject.toml` use published stable
-versions. Replace any `.dev`, alpha, beta, or release-candidate versions using
-`uv`, which also updates `uv.lock`. Merge dependency changes through the normal
-PR process. Pull `main` again and check for local changes before tagging.
+Confirm that the worktree has no local changes and that `$VERSION` has not already been published to GitHub or PyPI. Check `pyproject.toml` to verify all dependencies are pinned to published stable versions. If any use `.dev`, alpha, beta, or release-candidate versions, update them with `uv` (so `uv.lock` updates too), land the change through a normal PR, and pull `main` again before tagging.
 
 ## 2. Tag latest main
 
@@ -36,7 +31,7 @@ Confirm that the remote tag points to the current `main` commit.
 
 ## 3. Publish
 
-Start the stable release workflow:
+Manually dispatch the stable release workflow:
 
 ```bash
 gh workflow run publish.yml \
@@ -45,13 +40,11 @@ gh workflow run publish.yml \
   -f tag="$VERSION"
 ```
 
-Wait for it to finish with `gh run watch <run-id> --exit-status`.
+Watch the workflow run to completion with `gh run watch <run-id> --exit-status`.
 
 ## 4. Update the release notes
 
-After the workflow creates the public GitHub Release, read the previous stable
-release and use the same release-note format. Describe the changes since that
-release, then update the new release:
+Once the workflow creates the public GitHub Release, summarize the changes since the previous stable release using the same release-note format, then update the new release:
 
 ```bash
 gh release edit "$VERSION" \
@@ -63,6 +56,6 @@ gh release edit "$VERSION" \
 
 Confirm that:
 
-- PyPI lists `${VERSION#v}` with a wheel and source archive.
+- PyPI lists `${VERSION#v}` with both a wheel and a source archive.
 - The GitHub Release is public with both files attached.
-- The release notes match the prior release format.
+- The release notes match the format of prior releases.
