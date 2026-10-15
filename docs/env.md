@@ -5,10 +5,8 @@ An `Env` defines the control flow across one or more `Agents` for a single task.
 If your taskset package does not export a custom `Env` and you don't specify `--env.id`, verifiers defaults to `SingleAgentEnv`, which runs a single agent on each task. You can also select one of the built-in environments with `--env.id`:
 
 - `best-of-n` (`BestOfNEnv`): runs `n` independent attempts on the same task, marks which attempt achieved the highest reward (`best`), and records whether any attempt crossed a success threshold (`pass_at_n`), which is useful for rejection sampling and pass@k evaluation.
-- `agentic-judge` (`IsolatedAgenticJudgeEnv`): runs a solver agent first, then spins up a judge agent in a fresh runtime to evaluate the result.
-- `shared-agentic-judge` (`SharedAgenticJudgeEnv`): runs a solver agent followed by a judge agent that reuses the solver's runtime.
+- `agentic-judge` (`AgenticJudgeEnv`): runs a solver agent first, then a judge agent to evaluate the result. The solver's `ScoringConfig` (`--env.solver.scoring.mode shared|isolated`) selects the workspace used for both task scoring and agentic judging.
 - `user-sim` (`UserSimEnv`): models the user as a second agent and runs a turn-by-turn conversation between the user simulator and the assistant.
-- `isolated-verifier` (`IsolatedVerifierEnv`): runs a single solver, transfers only its declared artifacts into a fresh container runtime, and runs deterministic task scoring there without a judge model.
 
 ## Custom control flow
 
@@ -75,12 +73,42 @@ class ConversationEnv(vf.SingleAgentEnv):
 
 This pattern requires a harness that supports conversation resume. Calling `interaction.turn()` with no arguments sends the task's initial `prompt` (or pass a string if `prompt=None`), and each subsequent `turn(message)` runs the next harness segment within the same trace, token budget, and turn budget. Exiting the `async with` block finalizes and scores the rollout even if the script finishes before hitting the agent's turn or token limits. If your task hooks need extra state from the conversation, store it in `interaction.trace.state` or `interaction.trace.info` before leaving the block. See [Agent](agent.md) for more details on driving interactions.
 
-## Isolated deterministic verification
+## Verifier placement
 
-Use `--env.id isolated-verifier` (or export `IsolatedVerifierEnv` from your package) when deterministic scoring needs to run in a clean container that the solver has never touched. It is still a single-agent run: verifiers records one solver trace and does not spin up a second model or harness for grading.
+Task scoring placement is configured per agent rather than by switching `Env` classes, so it works under `SingleAgentEnv`, `BestOfNEnv`, and `AgenticJudgeEnv` alike. Set `--env.agent.scoring.mode isolated` (or set `scoring=vf.ScoringConfig(mode="isolated")` on `TaskData` as the task default) to restore declared artifacts into a fresh container runtime before running `@vf.metric`, `@vf.reward`, and configured judge plugins:
 
 ```bash
-uv run vf-eval my-task --env.id isolated-verifier --env.agent.runtime.type docker
+uv run vf-eval my-task --env.agent.runtime.type docker --env.agent.scoring.mode isolated
 ```
 
-Declare the solver outputs that need to be transferred in `TaskData.artifacts` and write any private test files in `Task.stage_verifier`. Once the solver finishes, the environment collects the declared artifacts, tears down the solver's runtime, provisions a fresh verifier container (using the solver's resolved runtime settings by default, or independent settings under `env.verifier.runtime`), restores the artifacts, and runs your `@vf.reward` and `@vf.metric` methods there. Model-backed task judges are not supported in `isolated-verifier`; see [building environments](building-environments.md#separate-agent-and-grading-sandboxes) for a complete package walkthrough, lifecycle diagram, and validation commands.
+Explicit `agent.scoring` fields override `TaskData.scoring`, and unset fields inherit from the task (defaulting to `shared` scoring in the agent's workspace when neither sets a mode).
+
+For isolated grading, declare every solver output the grader needs in `TaskData.artifacts` and write any private test files in `Task.stage_verifier`:
+
+```python
+class CodeTask(vf.Task[CodeData]):
+    async def stage_verifier(self, runtime: vf.Runtime) -> None:
+        await runtime.write("/tmp/test_solution.sh", PRIVATE_TESTS)
+
+    @vf.reward
+    async def tests(self, runtime: vf.Runtime) -> float:
+        result = await runtime.run(["bash", "/tmp/test_solution.sh"], {})
+        return float(result.exit_code == 0)
+
+
+task = CodeTask(
+    CodeData(
+        prompt="Fix the implementation.",
+        scoring=vf.ScoringConfig(mode="isolated"),
+        artifacts=[vf.Artifact(source="src")],
+    )
+)
+```
+
+When isolated scoring runs, task `setup` initializes the fresh container, declared artifacts are restored at their original paths, and `stage_verifier` installs private grading inputs before metrics, rewards, and judge plugins execute. You can customize the verifier environment and retry behavior under `agent.scoring`:
+
+- `agent.scoring.runtime` optionally selects a separate runtime provider, image, resource allocation, and network policy for the fresh verifier (when omitted, the agent's runtime policy and the task's scoring requirements are used; solver checkpoints are not inherited). Relative artifact paths require matching solver and verifier working directories, while absolute paths work across different `workdir` settings. Isolated verification requires a container runtime and cannot use `subprocess`.
+- `agent.scoring.env` merges over `TaskData.scoring.env` by key for both `shared` and `isolated` scoring, applying to scoring setup, staging, rewards, and judging without altering the solver's process environment (`${VAR}` and `${VAR:-default}` templates resolve from the host when scoring starts).
+- `agent.scoring.retries` uses `RetryConfig` (defaulting to `max_retries = 2`) to retry failed isolated scoring attempts in a fresh verifier container while reusing the completed solver submission. A valid `0.0` reward is treated as a completed grade and is not retried, and shared scoring is not retried.
+
+In `AgenticJudgeEnv`, the separate judge agent runs through the solver's `on_score` callback inside the selected verifier workspace before that workspace is torn down. Use `--env.solver.scoring.mode shared|isolated` (or leave it unset to follow the task's default) to control where the judge inspects the submission, and configure the judge's model and harness under `env.judge`. See [building environments](building-environments.md#separate-agent-and-grading-sandboxes) for a complete package walkthrough and validation commands.

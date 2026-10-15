@@ -29,6 +29,8 @@ async with vf.make_agent(config) as solver:
 trace = interaction.trace
 ```
 
+See [Runtime](runtime.md) for execution handles, resource ownership, and deployment of the harness, task workspace, and supporting services.
+
 ## Messages during an active turn
 
 `turn()` is designed for sequential exchanges where each user message waits for the previous segment to finish. When you need to send input while the agent is still working, or wake an idle interaction with new input, use `interaction.send()`:
@@ -45,3 +47,13 @@ receipt = await interaction.send(
 For tasks that define an initial `prompt`, start the opening `turn()` before calling `send()`. Note that the returned receipt confirms whether the message was accepted for delivery, not that the agent has finished acting on it. Keep the `interaction` context open while the agent works, since exiting the block cancels outstanding deliveries and finishes the rollout.
 
 A receipt with `outcome="injected"` indicates that delivery succeeded, whereas `outcome="promptRequired"` means the message could not be delivered (check `receipt.reason`, such as `interactionStopped`). Passing a stable `message_id` deduplicates repeated deliveries of the same message within an interaction.
+
+## Verification placement
+
+`agent.scoring.mode` selects whether task scoring runs in the agent's workspace (`shared`) or in a fresh container (`isolated`). Tasks can declare their own defaults on `TaskData.scoring` via `ScoringConfig`, and any fields explicitly set on `agent.scoring` override the task defaults (falling back to `shared` when neither sets a mode).
+
+When `mode="isolated"`, verifiers restores the task's collected artifacts into a fresh runtime before running task metrics, rewards, and judge plugins:
+
+- `agent.scoring.runtime` optionally overrides the runtime configuration used for the isolated verifier.
+- `agent.scoring.env` merges over `TaskData.scoring.env` in both `shared` and `isolated` modes, resolving `${VAR}` and `${VAR:-default}` templates from the host environment when scoring starts.
+- `agent.scoring.retries` configures `RetryConfig` for isolated scoring (defaulting to `max_retries = 2`), reusing the completed submission in a fresh scoring environment whenever a retryable error occurs. Shared scoring is not retried.

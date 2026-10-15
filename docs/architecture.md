@@ -25,3 +25,18 @@ Routing traffic through the interception server enables several things beyond fo
 - Building traces live so trajectories and token usage are recorded as they happen
 - Applying sampling parameters in harnesses that don't expose those settings directly
 - Running the task's [stop and interception hooks](tasksets.md#stops-and-interception) to inspect or rewrite tool responses and server-side web search results (for example, to block reward hacks)
+
+## Finishing a rollout
+
+When the agent finishes its turn normally, the rollout collects artifacts and runs in-place grading before closing the harness session:
+
+1. `task.finalize` runs and declared artifacts are collected, including the main service's `[[verifier.collect]]` commands.
+2. When grading runs in the agent's own runtime (`shared` scoring), the task scores the workspace (`task.score`, followed by `on_score`).
+3. The harness session closes, followed by the tool servers and the interception server.
+4. Harness metrics (`harness.score`) run.
+
+With isolated grading (`isolated` scoring), the harness session closes right after step 1, harness metrics run next, the workspace stops, sidecar evidence is collected (`finalize_services`), and the task is graded in a fresh runtime.
+
+Closing the harness session terminates any processes started by the agent's commands (for example, `nano-rlm` kills each job's process group, and `codex` and `prime-agent` close their shells). Running artifact collection and shared grading before closing the session ensures they can inspect live background processes or servers that the task asked the agent to leave running, while harness metrics wait until session close hands over the final session state.
+
+If a rollout is stopped mid-turn by a timeout or a stop condition, the harness session closes first so an still-active agent cannot mutate the workspace while grading runs. Rollouts that fail with an unhandled error are not scored.

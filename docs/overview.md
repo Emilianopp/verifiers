@@ -44,5 +44,6 @@ A trace records the message graph, rewards, metrics, errors, and one per-call re
 - [Validation and trace inspection](debugging.md) — Check setup, diagnose failures, and re-score saved runs
 - [Harnesses](harnesses.md) — How to build custom harnesses
 - [Agent](agent.md) — How to run standalone agents
+- [Runtime](runtime.md) — Execution handles, deployments, and Compose services
 - [Env](env.md) — How to build multi-agent environments
 - [GEPA](gepa.md) — Optimize a taskset's system prompt

@@ -109,7 +109,7 @@ Each single-agent rollout runs through five stages:
 4. **Task `finalize`** captures any outputs or state needed for scoring and inspection before tests mutate the workspace.
 5. **Scoring** runs metrics, rewards, and judges, after which the runtime is torn down.
 
-Lifecycle hooks (`setup` and `finalize`) can accept `trace` and `runtime` by parameter name. See the [runtime guide](runtimes.md) for working with files, processes, and network rules, and [isolated deterministic verification](env.md#isolated-deterministic-verification) when you want grading to run in a fresh container with selected paths transferred via `TaskData.artifacts`.
+Lifecycle hooks (`setup` and `finalize`) can accept `trace` and `runtime` by parameter name. See the [runtime guide](runtimes.md) for working with files, processes, and network rules, and [verifier placement](env.md#verifier-placement) when you want grading to run in a fresh container with selected paths transferred via `TaskData.artifacts`.
 
 If you need mutable state during a rollout, such as tracking intermediate values across hooks or tool calls, define a `vf.State` subclass (`Task[YourData, YourState, YourConfig]`) and access it via `trace.state`. Because `trace.state` is ephemeral and not written to disk, anything you want preserved in the saved trace (such as extracted answers, patches, or parsed judge verdicts) should go into `trace.info` as JSON-serializable values.
 
@@ -165,7 +165,7 @@ class ContextTask(vf.Task[ContextData]):
 
 If you use `read_answer_file_or_last_reply`, make sure the prompt mentions that either writing `/workspace/answer.txt` or replying directly is accepted; if the benchmark strictly requires an output file, read it with `runtime.read` instead so missing files aren't masked by the final message.
 
-When using [isolated verification](env.md#isolated-deterministic-verification), `finalize` still runs in the solver's sandbox before artifacts are collected, whereas `@vf.metric` and `@vf.reward` methods receive the fresh verifier runtime. Use `finalize` to capture solver-side evidence into `trace.info`, and declare any files the grader needs in `TaskData.artifacts`.
+When using [isolated verification](env.md#verifier-placement), `finalize` still runs in the solver's sandbox before artifacts are collected, whereas `@vf.metric`, `@vf.reward`, and configured judge plugins receive the fresh verifier runtime. Use `finalize` to capture solver-side evidence into `trace.info`, and declare any files the grader needs in `TaskData.artifacts`.
 
 ## Multimodal prompts
 

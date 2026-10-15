@@ -12,7 +12,7 @@ capability the code declares, never from a list of names, so the grid follows th
 - `Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support
   (`SUPPORTS_RESUME` or a native session): the behavior needs a shell, MCP tools,
   skills, or a resumable exchange
-- `Runtime.supports_user`, `Runtime.supports_expose`, `NetworkPolicyConfig`: the
+- `RuntimeBackend.supports_user`, `RuntimeBackend.supports_expose`, `NetworkPolicyConfig`: the
   behavior needs a user switch, a tool server reachable from another runtime, or a
   network policy
 - `podman` / `apptainer` need their engine on the host
@@ -39,7 +39,7 @@ from pydantic import TypeAdapter
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import RuntimeConfig, _runtime_cls
+from verifiers.v1.runtimes import RuntimeConfig, _backend_cls
 from verifiers.v1.utils.loaders import harness_class
 
 HARNESSES: list[str | dict] = [
@@ -58,6 +58,13 @@ HARNESSES: list[str | dict] = [
 RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2b"]
 ENGINES = ("podman", "apptainer")
 HARNESS_RUNTIMES = [runtime for runtime in RUNTIMES if runtime not in ENGINES]
+
+# Harnesses that cannot run against the CI model yet.
+# TODO: drop each entry once its fix lands.
+CI_MODEL_GAPS = {
+    "kimi-code": "Prime chat completions rejects kimi-code's prompt_cache_key",
+    "openclaw": "openclaw cannot load the custom `internal/` model provider",
+}
 
 
 def agent_seats(taskset: str, env_id: str = "") -> list[str]:
@@ -92,7 +99,7 @@ def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
 
 
 def runtime_cls(runtime: str) -> type:
-    return _runtime_cls(TypeAdapter(RuntimeConfig).validate_python({"type": runtime}))
+    return _backend_cls(TypeAdapter(RuntimeConfig).validate_python({"type": runtime}))
 
 
 def runtime_supports_user(runtime: str) -> bool:
@@ -164,7 +171,10 @@ def grid(
     for harness in harnesses:
         for runtime in runtimes:
             marks = [mark(harness_id(harness)), mark(runtime)]
-            if reason := unsupported(harness, runtime, needs):
+            reason = unsupported(harness, runtime, needs) or CI_MODEL_GAPS.get(
+                harness_id(harness)
+            )
+            if reason:
                 marks.append(pytest.mark.skip(reason=reason))
             cells.append(
                 pytest.param(
