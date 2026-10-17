@@ -274,7 +274,7 @@ class TurnTokens(BaseModel):
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the KV eviction the engine applied before this turn
     # (`{"spans": [[start, end], ...], "at": position}`, prompt positions), stamped onto the
-    # evicted nodes' `MessageNode.kv_death` by the turn's `commit`. None when nothing was evicted.
+    # turn's assistant node as `MessageNode.eviction` by its `commit`. None when nothing was evicted.
     eviction: dict[str, Any] | None = Field(default=None, exclude=True)
 
 

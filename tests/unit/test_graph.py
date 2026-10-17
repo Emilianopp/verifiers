@@ -699,6 +699,28 @@ def test_eviction_stamps_kv_death_on_the_evicted_prefix():
     assert restored.branches[-1].kv_death == branch.kv_death
 
 
+def test_eviction_leaves_sent_nodes_untouched():
+    """Traces stream to the client as append-only node deltas, so an eviction must not change
+    a node that may already be on the wire: it rides on the evicting turn's new node."""
+    trace = _kv_trace()
+    u1, u2, u3 = (vf.UserMessage(content=f"u{i}") for i in (1, 2, 3))
+    a1, a2 = vf.AssistantMessage(content="a1"), vf.AssistantMessage(content="a3")
+    _kv_turn(trace, [u1], [10, 11, 12], [20, 21], [(0, 2)])
+    _kv_turn(trace, [u1, a1, u2], [10, 11, 12, 20, 21, 30, 31], [40, 41], [(0, 2), None, (5, 7)])
+    sent = [node.model_dump() for node in trace.nodes]
+    _kv_turn(
+        trace,
+        [u1, a1, u2, a2, u3],
+        [10, 11, 12, 20, 21, 30, 31, 40, 41, 50, 51],
+        [60],
+        [(0, 2), None, (5, 7), None, (9, 11)],
+        eviction={"spans": [[2, 5]], "at": 9},
+    )
+    assert [node.model_dump() for node in trace.nodes[: len(sent)]] == sent
+    assert trace.nodes[-1].eviction == {"spans": [[2, 5]], "at": 9}
+    assert trace.branches[-1].kv_death[:5] == [-1, -1, 9, 9, 9]
+
+
 def test_eviction_keeps_a_token_s_first_death():
     trace = _kv_trace()
     u1, u2, u3 = (vf.UserMessage(content=f"u{i}") for i in (1, 2, 3))

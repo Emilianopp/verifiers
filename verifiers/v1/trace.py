@@ -328,18 +328,19 @@ class Branch(BaseModel):
 
     @property
     def kv_death(self) -> list[int] | None:
-        """Per-token eviction positions aligned to `token_ids` (-1 = never evicted; see
-        `MessageNode.kv_death`), or None when nothing on this path was evicted."""
-        if all(n.kv_death is None for n in self.nodes):
+        """Per-token eviction positions aligned to `token_ids` (-1 = never evicted): every
+        `MessageNode.eviction` on this path applied in order, a token keeping its first death.
+        None when nothing on this path was evicted."""
+        evictions = [n.eviction for n in self.nodes if n.eviction is not None]
+        if not evictions:
             return None
-        out: list[int] = []
-        for node in self.nodes:
-            out.extend(
-                node.kv_death
-                if node.kv_death is not None
-                else [-1] * len(node.token_ids)
-            )
-        return out
+        deaths = [-1] * sum(len(n.token_ids) for n in self.nodes)
+        for eviction in evictions:
+            for start, end in eviction["spans"]:
+                for k in range(start, end):
+                    if deaths[k] == -1:
+                        deaths[k] = eviction["at"]
+        return deaths
 
     @property
     def sampling_mask(self) -> SamplingMask | None:

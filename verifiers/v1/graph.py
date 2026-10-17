@@ -157,12 +157,13 @@ class MessageNode(BaseModel):
     the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
-    kv_death: list[int] | None = None
-    """Per-token, parallel to `token_ids`: the sequence position from which no later token
-    attends to this one because the engine evicted it from the KV cache (KV-Streams), or -1
-    for a token never evicted. None when none of this node's tokens were evicted. Stamped by
-    a later turn's `commit` from its `TurnTokens.eviction`; `Branch.kv_death` concatenates
-    these into the trainer's attention mask."""
+    eviction: dict[str, Any] | None = None
+    """The KV eviction the engine applied before computing this turn (KV-Streams), on the
+    turn's assistant node: `{"spans": [[start, end], ...], "at": position}`, positions in this
+    node's root path. Tokens in `spans` (all in the reused prefix) are unseen from `at` on.
+    It lives on the node the turn creates, never on the evicted nodes, so the trace stays
+    append-only (streamed node deltas never revisit sent nodes). `Branch.kv_death` applies
+    every eviction on the path into the trainer's attention mask."""
     sampling_mask: SkipJsonSchema[SamplingMask | None] = None
     """Sampling masks for this node's sampled tokens.
 
@@ -713,18 +714,17 @@ def _attribute_sampling_mask(
 
 
 def _attribute_eviction(
-    trace: Trace, prefix_node_ids: list[int], path_len: int, payload: dict | None
+    trace: Trace, assistant_id: int, path_len: int, payload: dict | None
 ) -> None:
-    """Stamp this turn's KV eviction onto the nodes it evicted. `payload["spans"]` are sorted,
-    disjoint `[start, end)` positions into this turn's prompt that the engine dropped before
-    computing position `payload["at"]` onward, so each evicted token gets `kv_death = at`. Only
-    resident context is evicted, which is always inside the reused prefix (`[0, path_len)`);
-    anything else means the engine and the trace disagree, so it raises instead of training on
-    a wrong mask. A token already evicted keeps its earlier death."""
+    """Record this turn's KV eviction on the turn's assistant node. `payload["spans"]` are
+    sorted, disjoint `[start, end)` positions into this turn's prompt that the engine dropped
+    before computing position `payload["at"]` onward. Only resident context is evicted, which
+    is always inside the reused prefix (`[0, path_len)`); anything else means the engine and the
+    trace disagree, so it raises instead of training on a wrong mask."""
     if not payload or not payload.get("spans"):
         return
     at = int(payload["at"])
-    spans = [(int(start), int(end)) for start, end in payload["spans"]]
+    spans = [[int(start), int(end)] for start, end in payload["spans"]]
     previous_end = 0
     for start, end in spans:
         if not previous_end <= start < end <= min(at, path_len):
@@ -733,20 +733,7 @@ def _attribute_eviction(
                 f"(0, {path_len}) before position {at}"
             )
         previous_end = end
-    off = 0
-    for nid in prefix_node_ids:
-        node = trace.nodes[nid]
-        n = len(node.token_ids)
-        for start, end in spans:
-            lo, hi = max(start, off), min(end, off + n)
-            if lo >= hi:
-                continue
-            if node.kv_death is None:
-                node.kv_death = [-1] * n
-            for k in range(lo - off, hi - off):
-                if node.kv_death[k] == -1:
-                    node.kv_death[k] = at
-        off += n
+    trace.nodes[assistant_id].eviction = {"spans": spans, "at": at}
 
 
 def _project_prompt_attribution(
@@ -1014,8 +1001,10 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         trace, assistant_id, tokens.sampling_mask if tokens else None
     )
 
-    # Evictions land on the reused prefix: they drop context earlier turns wrote.
-    _attribute_eviction(trace, prefix, path_len, tokens.eviction if tokens else None)
+    # Evictions drop context earlier turns wrote; they are recorded on this turn's node.
+    _attribute_eviction(
+        trace, assistant_id, path_len, tokens.eviction if tokens else None
+    )
 
     return assistant_id
 
