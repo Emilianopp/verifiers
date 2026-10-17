@@ -649,3 +649,133 @@ def test_prompt_supplied_assistant_messages_are_not_sampled_turns():
     assert [n.sampled for n in trace.nodes] == [False, False, False, True]
     assert trace.num_turns == 1
     assert trace.assistant_messages == [response]
+
+
+def _kv_trace() -> vf.Trace:
+    return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+
+
+def _kv_turn(trace, messages, prompt_ids, completion_ids, spans, eviction=None):
+    graph.prepare_turn(trace, messages).commit(
+        _response(vf.AssistantMessage(content=f"a{len(messages)}")).model_copy(
+            update={
+                "tokens": TurnTokens(
+                    prompt_ids=prompt_ids,
+                    completion_ids=completion_ids,
+                    message_spans=spans,
+                    eviction=eviction,
+                )
+            }
+        )
+    )
+
+
+def test_eviction_stamps_kv_death_on_the_evicted_prefix():
+    """Turn 3's eviction of turn 1's assistant node (positions [2, 5)) marks exactly those
+    tokens dead from position 9 on; everything else, including turn 3's own tokens, stays -1.
+    The prompt is the full chronological stream, so the trace stays one linear path."""
+    trace = _kv_trace()
+    u1, u2, u3 = (vf.UserMessage(content=f"u{i}") for i in (1, 2, 3))
+    a1, a2 = vf.AssistantMessage(content="a1"), vf.AssistantMessage(content="a3")
+    _kv_turn(trace, [u1], [10, 11, 12], [20, 21], [(0, 2)])
+    _kv_turn(
+        trace,
+        [u1, a1, u2],
+        [10, 11, 12, 20, 21, 30, 31],
+        [40, 41],
+        [(0, 2), None, (5, 7)],
+    )
+    assert trace.branches[-1].kv_death is None
+    _kv_turn(
+        trace,
+        [u1, a1, u2, a2, u3],
+        [10, 11, 12, 20, 21, 30, 31, 40, 41, 50, 51],
+        [60],
+        [(0, 2), None, (5, 7), None, (9, 11)],
+        eviction={"spans": [[2, 5]], "at": 9},
+    )
+    (branch,) = trace.branches
+    assert branch.token_ids == [10, 11, 12, 20, 21, 30, 31, 40, 41, 50, 51, 60]
+    assert branch.kv_death == [-1, -1, 9, 9, 9, -1, -1, -1, -1, -1, -1, -1]
+
+    restored = type(trace).model_validate(trace.model_dump())
+    assert restored.branches[-1].kv_death == branch.kv_death
+
+
+def test_eviction_leaves_sent_nodes_untouched():
+    """Traces stream to the client as append-only node deltas, so an eviction must not change
+    a node that may already be on the wire: it rides on the evicting turn's new node."""
+    trace = _kv_trace()
+    u1, u2, u3 = (vf.UserMessage(content=f"u{i}") for i in (1, 2, 3))
+    a1, a2 = vf.AssistantMessage(content="a1"), vf.AssistantMessage(content="a3")
+    _kv_turn(trace, [u1], [10, 11, 12], [20, 21], [(0, 2)])
+    _kv_turn(
+        trace,
+        [u1, a1, u2],
+        [10, 11, 12, 20, 21, 30, 31],
+        [40, 41],
+        [(0, 2), None, (5, 7)],
+    )
+    sent = [node.model_dump() for node in trace.nodes]
+    _kv_turn(
+        trace,
+        [u1, a1, u2, a2, u3],
+        [10, 11, 12, 20, 21, 30, 31, 40, 41, 50, 51],
+        [60],
+        [(0, 2), None, (5, 7), None, (9, 11)],
+        eviction={"spans": [[2, 5]], "at": 9},
+    )
+    assert [node.model_dump() for node in trace.nodes[: len(sent)]] == sent
+    assert trace.nodes[-1].eviction == {"spans": [[2, 5]], "at": 9}
+    assert trace.branches[-1].kv_death[:5] == [-1, -1, 9, 9, 9]
+
+
+def test_eviction_keeps_a_token_s_first_death():
+    trace = _kv_trace()
+    u1, u2, u3 = (vf.UserMessage(content=f"u{i}") for i in (1, 2, 3))
+    a1, a2 = vf.AssistantMessage(content="a1"), vf.AssistantMessage(content="a3")
+    _kv_turn(trace, [u1], [10, 11, 12], [20, 21], [(0, 2)])
+    _kv_turn(
+        trace,
+        [u1, a1, u2],
+        [10, 11, 12, 20, 21, 30, 31],
+        [40, 41],
+        [(0, 2), None, (5, 7)],
+        eviction={"spans": [[3, 5]], "at": 5},
+    )
+    _kv_turn(
+        trace,
+        [u1, a1, u2, a2, u3],
+        [10, 11, 12, 20, 21, 30, 31, 40, 41, 50, 51],
+        [60],
+        [(0, 2), None, (5, 7), None, (9, 11)],
+        eviction={"spans": [[2, 7]], "at": 9},
+    )
+    assert trace.branches[-1].kv_death[:7] == [-1, -1, 9, 5, 5, 9, 9]
+
+
+@pytest.mark.parametrize(
+    "eviction",
+    [
+        {"spans": [[5, 8]], "at": 9},  # reaches past the reused prefix
+        {"spans": [[2, 5]], "at": 4},  # evicts tokens computed after the eviction
+        {"spans": [[3, 5], [2, 4]], "at": 9},  # unsorted / overlapping
+    ],
+)
+def test_eviction_outside_the_resident_prefix_raises(eviction):
+    trace = _kv_trace()
+    u1, u2 = vf.UserMessage(content="u1"), vf.UserMessage(content="u2")
+    a1 = vf.AssistantMessage(content="a1")
+    _kv_turn(trace, [u1], [10, 11, 12], [20, 21], [(0, 2)])
+    with pytest.raises(ValueError, match="eviction span"):
+        _kv_turn(
+            trace,
+            [u1, a1, u2],
+            [10, 11, 12, 20, 21, 30, 31],
+            [40],
+            [(0, 2), None, (5, 7)],
+            eviction=eviction,
+        )

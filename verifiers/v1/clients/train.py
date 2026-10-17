@@ -181,6 +181,7 @@ def response_from_generate(
             sampling_mask=SamplingMask.from_sampling_mask(mask)
             if (mask := result.get("sampling_mask"))
             else None,
+            eviction=result.get("eviction"),
         ),
     )
 
