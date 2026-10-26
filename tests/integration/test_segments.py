@@ -95,18 +95,20 @@ async def test_segments_switch_on_budget(recording_model, monkeypatch):
             replies.append(segment.last_reply)
         last_trace = interaction.trace
 
-    summary_requests = [i for i, body in enumerate(requests) if _text(body["messages"][-1]) == segments.summary_prompt]
+    summary_requests = [i for i, body in enumerate(requests) if _text(body["messages"][-1]).endswith(segments.summary_prompt)]
     assert summary_requests, "the budget never triggered a summary"
     first = summary_requests[0]
     asked = requests[first]
     assert asked["max_tokens"] == 200  # the summary turn's own cap
-    assert _text(asked["messages"][-2]).startswith("observation")  # the pending observation, in view
+    # One new user message, like every other turn: the pending observation, then the request.
+    pending = _text(asked["messages"][-1]).removesuffix(f"\n\n{segments.summary_prompt}")
+    assert pending.startswith("observation") and asked["messages"][-2]["role"] == "assistant"
     # The next segment: the task's system prompt + the summary, opened by that observation.
     opened = requests[first + 1]["messages"]
     assert [m["role"] for m in opened] == ["system", "user"]
     assert _text(opened[0]).startswith("Play the game.")
     assert f"{segments.summary_header}\nreply {first + 1}" in _text(opened[0])
-    assert _text(opened[1]) == _text(asked["messages"][-2])
+    assert _text(opened[1]) == pending
     assert requests[first + 1]["max_tokens"] == 64
     # The caller never sees a summary: every reply it got answers an observation.
     assert f"reply {first + 1}" not in replies and len(replies) == 6

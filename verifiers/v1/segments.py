@@ -67,11 +67,24 @@ class SegmentedInteraction:
         self._current.trace.info["segment"] = self.segments
         self.segments += 1
 
+    def _ask_for_summary(self, message: str | Messages) -> str | Messages:
+        """`message` with the summary request appended to its last user message: the
+        turn keeps the shape of every other turn (one new user message), so the train
+        client renders it incrementally on the sampled tokens. A second user message
+        would make it re-render the history from text, which does not always round-trip
+        and would force a KV-Streams session to reopen."""
+        request = self.config.summary_prompt
+        if isinstance(message, str):
+            return f"{message}\n\n{request}"
+        messages = [parse_message(m) if isinstance(m, dict) else m for m in message]
+        last = messages[-1] if messages else None
+        if isinstance(last, UserMessage) and isinstance(last.content, str):
+            return [*messages[:-1], last.model_copy(update={"content": f"{last.content}\n\n{request}"})]
+        return [*messages, UserMessage(content=request)]
+
     async def _next_segment(self, message: str | Messages) -> None:
         assert self._current is not None
-        pending = [UserMessage(content=message)] if isinstance(message, str) else list(message)
-        ask = [*(parse_message(m) if isinstance(m, dict) else m for m in pending), UserMessage(content=self.config.summary_prompt)]
-        reply = await self._current.turn(ask, max_tokens=self.config.summary_tokens)
+        reply = await self._current.turn(self._ask_for_summary(message), max_tokens=self.config.summary_tokens)
         summary = "" if reply.terminated else reply.last_reply
         await self._stack.aclose()  # the segment's rollout finishes: scoring and hooks run
         self._stack = AsyncExitStack()
