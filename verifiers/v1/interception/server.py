@@ -606,7 +606,7 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
+        body = dialect.apply_overrides(body, session.ctx.model, session.sampling)
         streaming = dialect.streaming(body)
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
@@ -809,7 +809,7 @@ class InterceptionServer(Interception):
                         call_response = await session.client.get_response(
                             dialect,
                             body,
-                            session.ctx.sampling,
+                            session.sampling,
                             headers=upstream_headers,
                             session_id=session.trace.id,
                             turn=turn,

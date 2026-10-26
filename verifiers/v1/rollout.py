@@ -463,6 +463,7 @@ class Rollout:
         messages: Messages | None = None,
         *,
         on_input: Callable[[], None] | None = None,
+        max_tokens: int | None = None,
     ) -> bool:
         """Run ONE segment: the harness program to its exit. With `messages`, the
         segment resumes the exchange with the user's turn(s) (`Harness.resume` —
@@ -470,7 +471,8 @@ class Rollout:
         empty conversation); without, it launches on the task's own prompt.
         Returns whether the exchange can continue — a refused turn (limit, @stop),
         a failure (an expired agent timeout included), or a segment that made no
-        progress all end it."""
+        progress all end it. `max_tokens` caps each model call of this segment
+        instead of the rollout's `sampling.max_tokens`."""
         if not self._opened or self._closed or not self.ok:
             return False
         trace = self.trace
@@ -497,6 +499,7 @@ class Rollout:
                     if self._session.stopped:
                         return False
                 self._session.on_turn_input = on_input
+                self._session.turn_max_tokens = max_tokens
                 await self._harness_session.turn(messages)
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget: a
@@ -519,6 +522,7 @@ class Rollout:
             return False
         finally:
             self._session.on_turn_input = None
+            self._session.turn_max_tokens = None
             if trace.num_turns == turns_before:
                 trace.root_reply = root_reply_before
             if self._agent_time_remaining is not None:

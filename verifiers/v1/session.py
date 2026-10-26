@@ -38,6 +38,7 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
+    Sampling,
     ToolCall,
     ToolMessage,
     UserMessage,
@@ -150,6 +151,9 @@ class RolloutSession:
     response_stops: list[Callable] = field(default_factory=list)
     on_turn_input: Callable[[], None] | None = None
     """One-shot acknowledgement when a resumed harness reaches model inference."""
+    turn_max_tokens: int | None = None
+    """This turn's completion-token cap (`Interaction.turn(max_tokens=)`), over the
+    rollout's own `sampling.max_tokens`; None between turns."""
     gates_tools: bool = False
     """Whether the harness asks `/tool` before executing each call (see
     `Harness.SUPPORTS_TOOL_INTERCEPTION`). Without that gate a pre-execution rewrite
@@ -158,6 +162,7 @@ class RolloutSession:
     """The model client serving this rollout's turns. The interception server assigns it at
     `register` (one server-owned client per distinct endpoint config), so every rollout it
     multiplexes shares one keepalive connection pool instead of opening its own."""
+
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error, so
     when its program dies on it the rollout records this original error instead of a secondary
@@ -188,6 +193,13 @@ class RolloutSession:
     gated_tools: set[tuple[str, str]] = field(default_factory=set)
     """Calls the harness's gate asked about before executing."""
     prepared_users: Counter[str] = field(default_factory=Counter)
+
+    @property
+    def sampling(self) -> Sampling:
+        """The rollout's sampling, with this turn's token cap applied."""
+        if self.turn_max_tokens is None:
+            return self.ctx.sampling
+        return self.ctx.sampling.model_copy(update={"max_tokens": self.turn_max_tokens})
 
     @property
     def stopped(self) -> bool:
