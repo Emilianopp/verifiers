@@ -752,6 +752,31 @@ class Agent:
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
     ) -> AsyncIterator[Interaction]:
+        """Interact with this agent turn-by-turn (see `_interaction`). With
+        `config.segments`, the exchange runs as a chain of traces under a token
+        budget, joined by the model's own summaries (`verifiers.v1.segments`)."""
+
+        def open_segment(segment_task: Task):
+            return self._interaction(segment_task, runtime=runtime, tools=tools, on_trace=on_trace)
+
+        if self.config.segments is None:
+            async with open_segment(task) as interaction:
+                yield interaction
+            return
+        from verifiers.v1.segments import segmented
+
+        async with segmented(self.config.segments, task, open_segment) as interaction:
+            yield cast(Interaction, interaction)
+
+    @asynccontextmanager
+    async def _interaction(
+        self,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+    ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
         `Interaction`; `await interaction.turn("...")` sends one user turn and
@@ -947,7 +972,7 @@ class _EpisodeAgent(Agent):
         return trace
 
     @asynccontextmanager
-    async def interaction(
+    async def _interaction(
         self,
         task: Task,
         *,
@@ -970,7 +995,7 @@ class _EpisodeAgent(Agent):
                 on_trace(current)
 
         try:
-            async with super().interaction(
+            async with super()._interaction(
                 task,
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),

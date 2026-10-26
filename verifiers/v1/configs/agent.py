@@ -28,6 +28,33 @@ class TimeoutConfig(BaseConfig):
     """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
 
 
+class SegmentsConfig(BaseConfig):
+    """Run an env-driven exchange as a chain of traces (segments), each under a
+    token budget, joined by handoff summaries the model writes itself. See
+    `verifiers.v1.segments`."""
+
+    budget_tokens: int = Field(gt=0)
+    """Tokens (prompt + replies, chronological) a segment's trace may reach; the
+    switch to the next segment starts at `budget_tokens - summary_tokens`."""
+    summary_tokens: int = Field(gt=0)
+    """Cap on the handoff summary's length, and the room kept for writing it."""
+    summary_prompt: str = (
+        "Your context is about to be reset. Before your next action, write a handoff "
+        "summary of your progress: the goal, what you have achieved, what you know "
+        "about the world and where things are, what failed, and your plan. It is all "
+        "you will keep of this conversation. Do not take an action in this reply."
+    )
+    """The user message (after the pending observation) that asks for the summary."""
+    summary_header: str = "HANDOFF SUMMARY (written by you before your context was reset):"
+    """Heads the summary in the next segment's system prompt."""
+
+    @model_validator(mode="after")
+    def _summary_fits(self):
+        if self.summary_tokens >= self.budget_tokens:
+            raise ValueError("segments.summary_tokens must be below segments.budget_tokens")
+        return self
+
+
 class AgentConfig(BaseConfig):
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The agent's program (None = the taskset's default harness)."""
@@ -50,6 +77,10 @@ class AgentConfig(BaseConfig):
     """Max output tokens per run (None = no limit)."""
     max_total_tokens: int | None = None
     """Max total tokens per run (None = no limit)."""
+    segments: SegmentsConfig | None = None
+    """Run each `interaction()` as a chain of traces under a token budget, joined by
+    the model's own summaries (None = one trace per interaction). Limits apply per
+    segment."""
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
