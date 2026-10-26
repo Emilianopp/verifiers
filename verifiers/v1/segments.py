@@ -16,6 +16,7 @@ summary turn is the last turn of its segment's trace, so it is trained with it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING
@@ -30,12 +31,20 @@ if TYPE_CHECKING:
     from verifiers.v1.agent import Interaction, Segment
 
 OpenSegment = Callable[[Task], AbstractAsyncContextManager["Interaction"]]
+_SUMMARY = re.compile(r"<summary>(.*?)(?:</summary>|$)", re.DOTALL)
 
 
 def trace_tokens(trace: Trace) -> int:
     """The trace's chronological length: its message tokens (a KV-Streams trace's
     positions), else the provider-reported total when nodes carry no token ids."""
     return sum(len(node.token_ids) for node in trace.nodes) or trace.num_total_tokens
+
+
+def _summary_text(reply: str) -> str:
+    """The text inside `<summary>...</summary>` (to the end of the reply when the closing
+    tag is missing), else the whole reply."""
+    match = _SUMMARY.search(reply)
+    return (match.group(1) if match else reply).strip()
 
 
 class SegmentedInteraction:
@@ -85,7 +94,7 @@ class SegmentedInteraction:
     async def _next_segment(self, message: str | Messages) -> None:
         assert self._current is not None
         reply = await self._current.turn(self._ask_for_summary(message), max_tokens=self.config.summary_tokens)
-        summary = "" if reply.terminated else reply.last_reply
+        summary = "" if reply.terminated else _summary_text(reply.last_reply)
         await self._stack.aclose()  # the segment's rollout finishes: scoring and hooks run
         self._stack = AsyncExitStack()
         system = f"{self._task.data.system_prompt or ''}\n\n{self.config.summary_header}\n{summary}".lstrip()

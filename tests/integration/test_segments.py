@@ -115,3 +115,11 @@ async def test_segments_switch_on_budget(recording_model, monkeypatch):
     # Each segment is its own trace, numbered.
     segment_ids = {trace.id: trace.info.get("segment") for trace in traces}
     assert len(segment_ids) >= 2 and last_trace.info["segment"] == len(segment_ids) - 1
+
+
+def test_summary_text_keeps_the_tagged_summary():
+    from verifiers.v1.segments import _summary_text
+
+    assert _summary_text("<action>noop</action>\n<summary>\nGoal: A\n</summary>") == "Goal: A"
+    assert _summary_text("<summary>\ncut off before the closing tag") == "cut off before the closing tag"
+    assert _summary_text("plain prose") == "plain prose"

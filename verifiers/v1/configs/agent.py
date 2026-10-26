@@ -39,12 +39,15 @@ class SegmentsConfig(BaseConfig):
     summary_tokens: int = Field(gt=0)
     """Cap on the handoff summary's length, and the room kept for writing it."""
     summary_prompt: str = (
-        "Your context is about to be reset. Before your next action, write a handoff "
-        "summary of your progress: the goal, what you have achieved, what you know "
-        "about the world and where things are, what failed, and your plan. It is all "
-        "you will keep of this conversation. Do not take an action in this reply."
+        "Your context is about to be reset, and this reply is not a game turn. Write a "
+        "handoff summary of your progress between <summary> and </summary>: the goal, "
+        "what you have achieved, what you know about the world and where things are, "
+        "what failed, and your plan. It is all you will keep of this conversation; the "
+        "observation above will be shown to you again after the reset. Do not write an "
+        "action."
     )
-    """The user message (after the pending observation) that asks for the summary."""
+    """Appended to the pending observation to ask for the summary. The text inside
+    `<summary>...</summary>` is kept, else the whole reply."""
     summary_header: str = "HANDOFF SUMMARY (written by you before your context was reset):"
     """Heads the summary in the next segment's system prompt."""
 
