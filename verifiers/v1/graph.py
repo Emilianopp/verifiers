@@ -157,6 +157,13 @@ class MessageNode(BaseModel):
     the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
+    eviction: dict[str, Any] | None = None
+    """The KV eviction the engine applied before computing this turn (KV-Streams), on the
+    turn's assistant node: `{"spans": [[start, end], ...], "at": position}`, positions in this
+    node's root path. Tokens in `spans` (all in the reused prefix) are unseen from `at` on.
+    It lives on the node the turn creates, never on the evicted nodes, so the trace stays
+    append-only (streamed node deltas never revisit sent nodes). `Branch.kv_death` applies
+    every eviction on the path into the trainer's attention mask."""
     sampling_mask: SkipJsonSchema[SamplingMask | None] = None
     """Sampling masks for this node's sampled tokens.
 
@@ -706,6 +713,29 @@ def _attribute_sampling_mask(
     node.sampling_mask = payload
 
 
+def _attribute_eviction(
+    trace: Trace, assistant_id: int, path_len: int, payload: dict | None
+) -> None:
+    """Record this turn's KV eviction on the turn's assistant node. `payload["spans"]` are
+    sorted, disjoint `[start, end)` positions into this turn's prompt that the engine dropped
+    before computing position `payload["at"]` onward. Only resident context is evicted, which
+    is always inside the reused prefix (`[0, path_len)`); anything else means the engine and the
+    trace disagree, so it raises instead of training on a wrong mask."""
+    if not payload or not payload.get("spans"):
+        return
+    at = int(payload["at"])
+    spans = [[int(start), int(end)] for start, end in payload["spans"]]
+    previous_end = 0
+    for start, end in spans:
+        if not previous_end <= start < end <= min(at, path_len):
+            raise ValueError(
+                f"eviction span [{start}, {end}) is not inside the reused prefix "
+                f"(0, {path_len}) before position {at}"
+            )
+        previous_end = end
+    trace.nodes[assistant_id].eviction = {"spans": spans, "at": at}
+
+
 def _project_prompt_attribution(
     renderer_prompt_ids: list[int],
     prompt_ids: list[int],
@@ -969,6 +999,11 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Sampling masks are completion-aligned, so only the sampled node carries them.
     _attribute_sampling_mask(
         trace, assistant_id, tokens.sampling_mask if tokens else None
+    )
+
+    # Evictions drop context earlier turns wrote; they are recorded on this turn's node.
+    _attribute_eviction(
+        trace, assistant_id, path_len, tokens.eviction if tokens else None
     )
 
     return assistant_id
