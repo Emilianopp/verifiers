@@ -453,20 +453,25 @@ class Interaction:
             self._finish_pending(error)
             raise
 
-    async def turn(self, message: str | Messages | None = None) -> Segment:
+    async def turn(
+        self, message: str | Messages | None = None, *, max_tokens: int | None = None
+    ) -> Segment:
         """Send one user turn (a string, or full `Messages` for multimodal /
         multi-message turns); run one segment; return its `Segment`. A
         prompted task speaks FIRST: take its opening reply with a bare `turn()`
         before answering. A `terminated` segment means the run ended instead of
-        answering (the message went unconsumed)."""
+        answering (the message went unconsumed). `max_tokens` caps this turn's
+        replies instead of the agent's `sampling.max_tokens` (e.g. a long summary
+        turn among short action turns)."""
         async with self._lock, self._gate or nullcontext():
-            return await self._turn(message)
+            return await self._turn(message, max_tokens=max_tokens)
 
     async def _turn(
         self,
         message: str | Messages | None,
         *,
         on_input: Callable[[], None] | None = None,
+        max_tokens: int | None = None,
     ) -> Segment:
         if self._closing or self._run.closed:
             raise RuntimeError("this interaction is closed")
@@ -496,7 +501,7 @@ class Interaction:
         self._started = True
         turns_before = self.trace.num_turns
         nodes_before = len(self.trace.nodes)
-        await self._run.step(messages, on_input=on_input)
+        await self._run.step(messages, on_input=on_input, max_tokens=max_tokens)
         if self.trace.num_turns > turns_before:
             # The segment answered — even if a limit or @stop then ended the
             # exchange, that surfaces as the NEXT turn's terminated segment.
