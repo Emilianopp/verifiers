@@ -190,13 +190,18 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        on_trace_complete: Callable[[dict], None] | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas."""
+        episode returned is assembled from the same deltas. `on_trace_complete` gets
+        each trace's assembled dict (a dumped `Trace` plus its `pending` preview) when
+        it completes - before the episode ends for a trace that closes early (e.g. a
+        segment). The dict stays live: the trace's last deltas (its final `ok`, set
+        after scoring) land on it after completion, so read it later, not at once."""
         assembly = EpisodeAssembly()
 
         def apply(data: bytes) -> None:
@@ -204,6 +209,10 @@ class EnvClient:
             assembly.apply(delta)
             if on_delta is not None:
                 on_delta(delta)
+            if on_trace_complete is not None and (delta.get("set") or {}).get("is_completed"):
+                trace = assembly.traces.get(delta["trace"])
+                if trace is not None:
+                    on_trace_complete(trace)
 
         response = await self._request(
             RunRequest(
