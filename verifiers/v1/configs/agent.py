@@ -28,6 +28,41 @@ class TimeoutConfig(BaseConfig):
     """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
 
 
+class SegmentsConfig(BaseConfig):
+    """Run an env-driven exchange as a chain of traces (segments), each under a
+    token budget, joined by handoff summaries the model writes itself. See
+    `verifiers.v1.segments`."""
+
+    new_tokens: int = Field(gt=0)
+    """New tokens a segment may add: every message after its opening system prompt
+    (observations, replies, its own closing summary), evicted ones included. The system
+    prompt carries the previous segment's summary and is not counted, so every segment
+    gets the same budget whatever that summary's length. The switch to the next segment
+    starts once the segment has added `new_tokens - summary_tokens`; its trace is then
+    at most the system prompt (with up to `summary_tokens` of inherited summary) plus
+    `new_tokens`, give or take the turn that crosses the threshold."""
+    summary_tokens: int = Field(gt=0)
+    """Cap on the handoff summary's length, and the room kept for writing it."""
+    summary_prompt: str = (
+        "Your context is about to be reset, and this reply is not a game turn. Write a "
+        "handoff summary of your progress between <summary> and </summary>: the goal, "
+        "what you have achieved, what you know about the world and where things are, "
+        "what failed, and your plan. It is all you will keep of this conversation; the "
+        "observation above will be shown to you again after the reset. Do not write an "
+        "action."
+    )
+    """Appended to the pending observation to ask for the summary. The text inside
+    `<summary>...</summary>` is kept, else the whole reply."""
+    summary_header: str = "HANDOFF SUMMARY (written by you before your context was reset):"
+    """Heads the summary in the next segment's system prompt."""
+
+    @model_validator(mode="after")
+    def _summary_fits(self):
+        if self.summary_tokens >= self.new_tokens:
+            raise ValueError("segments.summary_tokens must be below segments.new_tokens")
+        return self
+
+
 class AgentConfig(BaseConfig):
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The agent's program (None = the taskset's default harness)."""
@@ -50,6 +85,10 @@ class AgentConfig(BaseConfig):
     """Max output tokens per run (None = no limit)."""
     max_total_tokens: int | None = None
     """Max total tokens per run (None = no limit)."""
+    segments: SegmentsConfig | None = None
+    """Run each `interaction()` as a chain of traces under a token budget, joined by
+    the model's own summaries (None = one trace per interaction). Limits apply per
+    segment."""
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
