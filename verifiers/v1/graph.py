@@ -528,6 +528,14 @@ class PendingTurn:
             for span in tail_spans
         ]
 
+    def renderer_prefix_ids(self) -> list[int]:
+        """The logical renderer tokens of the matched prefix: what the engine already holds."""
+        return [
+            token
+            for nid in self.prefix_node_ids
+            for token in self.trace.nodes[nid].logical_ids
+        ]
+
     @property
     def renderer_path_len(self) -> int:
         return sum(
