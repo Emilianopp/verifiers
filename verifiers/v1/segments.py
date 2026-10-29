@@ -1,11 +1,12 @@
-"""Segments: one env-driven exchange as a chain of traces, each under a token
-budget, joined by handoff summaries the model writes itself.
+"""Segments: one env-driven exchange as a chain of traces, each under a budget of
+new tokens, joined by handoff summaries the model writes itself.
 
-When the current trace reaches `budget_tokens - summary_tokens`, the next
-`turn(message)` first asks the model, on that trace, for a summary of its
-progress (with `message` in view, capped at `summary_tokens`), closes the trace,
-and opens the next one: the task's system prompt plus the summary, opened by
-`message`, whose reply is what the caller gets. The caller (an env's rollout
+When the current segment has added `new_tokens - summary_tokens` past its opening
+system prompt (`segment_new_tokens`), the next `turn(message)` first asks the model,
+on that trace, for a summary of its progress (with `message` in view, capped at
+`summary_tokens`), closes the trace, and opens the next one: the task's system prompt
+plus the summary, opened by `message`, whose reply is what the caller gets. The
+inherited summary is not counted, so every segment gets the same budget. The caller (an env's rollout
 loop) keeps its own state, a game, across segments and never sees the switch.
 
 Each segment is a full rollout with its own trace, limits and scoring; on a
@@ -34,10 +35,16 @@ OpenSegment = Callable[[Task], AbstractAsyncContextManager["Interaction"]]
 _SUMMARY = re.compile(r"<summary>(.*?)(?:</summary>|$)", re.DOTALL)
 
 
-def trace_tokens(trace: Trace) -> int:
-    """The trace's chronological length: its message tokens (a KV-Streams trace's
-    positions), else the provider-reported total when nodes carry no token ids."""
-    return sum(len(node.token_ids) for node in trace.nodes) or trace.num_total_tokens
+def segment_new_tokens(trace: Trace) -> int:
+    """Tokens the segment has added past its opening system prompt, which carries the
+    previous segment's summary: every later message's tokens, evicted ones included (a
+    KV-Streams trace's positions past the system prompt). When nodes carry no token ids,
+    the provider-reported total past the first call's prompt, which also leaves out the
+    segment's opening message."""
+    if any(node.token_ids for node in trace.nodes):
+        return sum(len(node.token_ids) for node in trace.nodes if node.message.role != "system")
+    opening = next((call.usage.input_tokens for call in trace.calls if call.usage is not None), 0)
+    return max(0, trace.num_total_tokens - opening)
 
 
 def _summary_text(reply: str) -> str:
@@ -66,8 +73,8 @@ class SegmentedInteraction:
 
     async def turn(self, message: str | Messages | None = None, *, max_tokens: int | None = None) -> Segment:
         assert self._current is not None
-        threshold = self.config.budget_tokens - self.config.summary_tokens
-        if message is not None and trace_tokens(self.trace) >= threshold:
+        threshold = self.config.new_tokens - self.config.summary_tokens
+        if message is not None and segment_new_tokens(self.trace) >= threshold:
             await self._next_segment(message)
         return await self._current.turn(message, max_tokens=max_tokens)
 
