@@ -33,9 +33,14 @@ class SegmentsConfig(BaseConfig):
     token budget, joined by handoff summaries the model writes itself. See
     `verifiers.v1.segments`."""
 
-    budget_tokens: int = Field(gt=0)
-    """Tokens (prompt + replies, chronological) a segment's trace may reach; the
-    switch to the next segment starts at `budget_tokens - summary_tokens`."""
+    new_tokens: int = Field(gt=0)
+    """New tokens a segment may add: every message after its opening system prompt
+    (observations, replies, its own closing summary), evicted ones included. The system
+    prompt carries the previous segment's summary and is not counted, so every segment
+    gets the same budget whatever that summary's length. The switch to the next segment
+    starts once the segment has added `new_tokens - summary_tokens`; its trace is then
+    at most the system prompt (with up to `summary_tokens` of inherited summary) plus
+    `new_tokens`, give or take the turn that crosses the threshold."""
     summary_tokens: int = Field(gt=0)
     """Cap on the handoff summary's length, and the room kept for writing it."""
     summary_prompt: str = (
@@ -53,8 +58,8 @@ class SegmentsConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _summary_fits(self):
-        if self.summary_tokens >= self.budget_tokens:
-            raise ValueError("segments.summary_tokens must be below segments.budget_tokens")
+        if self.summary_tokens >= self.new_tokens:
+            raise ValueError("segments.summary_tokens must be below segments.new_tokens")
         return self
 
 

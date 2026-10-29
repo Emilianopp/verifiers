@@ -74,7 +74,7 @@ async def test_segments_switch_on_budget(recording_model, monkeypatch):
 
     monkeypatch.setenv("RECORDED_API_KEY", "unused")
     base_url, requests = recording_model
-    segments = SegmentsConfig(budget_tokens=700, summary_tokens=200)
+    segments = SegmentsConfig(new_tokens=500, summary_tokens=200)
     agent = vf.make_agent(
         vf.AgentConfig(
             harness=NullHarnessConfig(id="null"),
@@ -123,3 +123,52 @@ def test_summary_text_keeps_the_tagged_summary():
     assert _summary_text("<action>noop</action>\n<summary>\nGoal: A\n</summary>") == "Goal: A"
     assert _summary_text("<summary>\ncut off before the closing tag") == "cut off before the closing tag"
     assert _summary_text("plain prose") == "plain prose"
+
+
+def _trace(nodes):
+    return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None), key="dataset/example-0", hash="digest"),
+        nodes=nodes,
+    )
+
+
+def test_new_tokens_leave_out_the_opening_system_prompt():
+    """The budget counts what the segment adds, not the system prompt that carries the
+    previous segment's summary: a long inherited summary does not shrink the budget."""
+    from verifiers.v1.graph import MessageNode
+    from verifiers.v1.segments import segment_new_tokens
+    from verifiers.v1.types import AssistantMessage, SystemMessage, UserMessage
+
+    def segment(summary_tokens: int) -> vf.Trace:
+        return _trace(
+            [
+                MessageNode(message=SystemMessage(content="rules + summary"), token_ids=[1] * (100 + summary_tokens)),
+                MessageNode(parent=0, message=UserMessage(content="observation"), token_ids=[2] * 50),
+                MessageNode(parent=1, message=AssistantMessage(content="action"), token_ids=[3] * 30, sampled=True),
+            ]
+        )
+
+    assert segment_new_tokens(segment(0)) == segment_new_tokens(segment(4000)) == 80
+
+
+def test_new_tokens_without_token_ids_count_past_the_first_prompt():
+    """A relay trace (no token ids): the provider total past the first call's prompt."""
+    from verifiers.v1.graph import MessageNode
+    from verifiers.v1.segments import segment_new_tokens
+    from verifiers.v1.types import AssistantMessage, SystemMessage, UserMessage, Usage
+
+    trace = _trace(
+        [
+            MessageNode(message=SystemMessage(content="rules + summary")),
+            MessageNode(parent=0, message=UserMessage(content="observation 0")),
+            MessageNode(parent=1, message=AssistantMessage(content="action 0"), sampled=True),
+            MessageNode(parent=2, message=UserMessage(content="observation 1")),
+            MessageNode(parent=3, message=AssistantMessage(content="action 1"), sampled=True),
+        ]
+    )
+    trace.calls = [
+        vf.ModelCall(node=2, usage=Usage(prompt_tokens=1200, completion_tokens=30)),  # system + opening message
+        vf.ModelCall(node=4, usage=Usage(prompt_tokens=1280, completion_tokens=40)),  # + 50 observation tokens
+    ]
+    assert segment_new_tokens(trace) == 30 + 50 + 40
