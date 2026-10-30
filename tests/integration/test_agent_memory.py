@@ -79,9 +79,9 @@ async def test_memory_across_a_segment_switch(writing_model, monkeypatch):
             assert not (await interaction.turn(f"observation {step}")).terminated
 
     assert _text(requests[0]["messages"][0]).startswith("Play the game.\n\nMEMORY\n")
-    assert _text(requests[0]["messages"][-1]) == "[Memory] no entries yet\n\nobservation 0"
+    assert _text(requests[0]["messages"][-1]) == f"{Memory().index()}\n\nobservation 0\n\n{memory_config.turn_note}"
     assert _text(requests[1]["messages"][-1]).startswith('[Memory] log (1 tok)\nwrite "log": saved (1 tok)\n\nobservation 1')
-    asked = next(i for i, body in enumerate(requests) if _text(body["messages"][-1]).endswith(memory_config.summary_note))
+    asked = next(i for i, body in enumerate(requests) if f"{memory_config.summary_note}\n\n{memory_config.turn_note}" in _text(body["messages"][-1]))
     opened = requests[asked + 1]["messages"]
     assert [m["role"] for m in opened] == ["system", "user"] and "MEMORY\n" in _text(opened[0])
     assert RESET in _text(opened[1]) and "write \"log\": saved" in _text(opened[1])  # the summary turn's write

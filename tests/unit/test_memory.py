@@ -55,6 +55,9 @@ def test_the_prompt_states_the_limit():
     assert "4,096 tokens" in memory_system_prompt(MemoryConfig(), "sys")
 
 
+EMPTY = Memory().index()
+
+
 def _task():
     return vf.Task(vf.TaskData(idx=0, prompt=None, system_prompt="sys"))
 
@@ -90,10 +93,11 @@ async def test_every_observation_carries_the_block_and_last_results():
     fake = FakeTurns(['<write key="plan">get wood</write><read key="plan"/><action>DO</action>', "<action>DO</action>"])
     store = Memory()
     async with fake.open(_task()) as inner:
-        interaction = MemoryInteraction(inner, store)
+        interaction = MemoryInteraction(inner, store, note="NOTE")
         await interaction.turn("obs 1")
         await interaction.turn("obs 2")
-    assert fake.sent[0] == "[Memory] no entries yet\n\nobs 1"
+    assert fake.sent[0] == f"{EMPTY}\n\nobs 1\n\nNOTE"
+    assert fake.sent[1].endswith("obs 2\n\nNOTE")
     assert fake.sent[1].startswith('[Memory] plan (2 tok)\nwrite "plan": saved (2 tok)\n[Memory "plan"]\nget wood\n[/Memory "plan"]\n\nobs 2')
 
 
@@ -125,5 +129,5 @@ async def test_segments_share_the_store_and_the_summary_turn_edits_it():
         await interaction.turn("obs 1")
         await interaction.turn("obs 2")  # switch: the summary turn writes, the next segment opens
     assert store.entries == {"map": "table at (1,2)"}
-    assert fake.sent[1].startswith("[Memory] no entries yet\n\nobs 2\n\n")  # the summary request
+    assert fake.sent[1].startswith(f"{EMPTY}\n\nobs 2\n\n")  # the summary request
     assert fake.sent[2].startswith(f'[Memory] map (4 tok)\n{RESET}\nwrite "map": saved (4 tok)\n\nobs 2')

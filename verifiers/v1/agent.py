@@ -783,7 +783,7 @@ class Agent:
             async def open_segment(segment_task: Task):
                 async with plain_segment(segment_task) as inner:
                     # A segment that opens on a non-empty memory follows a reset (or resumes a run).
-                    yield MemoryInteraction(inner, store, RESET if store.entries else None)
+                    yield MemoryInteraction(inner, store, RESET if store.entries else None, config.turn_note)
 
         if segments is None:
             if summary is not None:

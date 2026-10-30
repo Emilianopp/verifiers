@@ -12,7 +12,8 @@ reasoning are ignored):
     <read key="K"/>                                       show K on the next turn
 
 Every observation the caller sends is prefixed with a [Memory] block: the keys and
-their sizes, the results of the last reply's edits, and the entries it asked to read.
+their sizes, the results of the last reply's edits, and the entries it asked to read;
+an optional note after the observation reminds the model it can edit the memory.
 The block goes into the observation rather than the system prompt because a turn may
 only append to the conversation (a KV-Streams session cannot rewrite its history); old
 blocks leave the context with their turns. An entry is capped at `max_key_tokens`
@@ -60,7 +61,7 @@ class Memory:
 
     def index(self) -> str:
         if not self.entries:
-            return "[Memory] no entries yet"
+            return "[Memory] no entries yet: nothing you learn is kept past this context unless you write it down"
         keys = " · ".join(f"{k} ({tokens(v):,} tok)" for k, v in self.entries.items())
         return f"[Memory] {keys}"
 
@@ -142,10 +143,11 @@ class MemoryInteraction:
     the edits in every reply applied. Segments share one `Memory`, so a summary turn's
     edits count and the next segment opens on them."""
 
-    def __init__(self, inner: Interaction, memory: Memory, opening: str | None = None) -> None:
+    def __init__(self, inner: Interaction, memory: Memory, opening: str | None = None, note: str | None = None) -> None:
         self._inner = inner
         self.memory = memory
         self._opening = opening  # the first observation's lead line (a reset or a resumed run)
+        self._note = note  # every observation's last line
 
     @property
     def trace(self):
@@ -168,13 +170,14 @@ class MemoryInteraction:
 
     def _with_block(self, message: str | Messages) -> str | Messages:
         block = self._block()
+        tail = f"\n\n{self._note}" if self._note else ""
         if isinstance(message, str):
-            return f"{block}\n\n{message}"
+            return f"{block}\n\n{message}{tail}"
         messages = [parse_message(m) if isinstance(m, dict) else m for m in message]
         last = messages[-1] if messages else None
         if isinstance(last, UserMessage) and isinstance(last.content, str):
-            return [*messages[:-1], last.model_copy(update={"content": f"{block}\n\n{last.content}"})]
-        return [*messages, UserMessage(content=block)]
+            return [*messages[:-1], last.model_copy(update={"content": f"{block}\n\n{last.content}{tail}"})]
+        return [*messages, UserMessage(content=f"{block}{tail}")]
 
     async def turn(self, message: str | Messages | None = None, *, max_tokens: int | None = None) -> Segment:
         if message is not None:

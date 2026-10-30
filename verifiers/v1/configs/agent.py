@@ -97,6 +97,12 @@ class MemoryConfig(BaseConfig):
         "entries to read first after the reset."
     )
     """Appended to the segments' summary request."""
+    turn_note: str | None = (
+        "You may also edit your memory in this reply (write, rewrite, replace, delete or read "
+        "tags, before any action tags): write down anything you learned that you will need later."
+    )
+    """Appended to every observation, so the reminder is the last thing the model reads
+    (None = no reminder)."""
 
 
 class AgentConfig(BaseConfig):
