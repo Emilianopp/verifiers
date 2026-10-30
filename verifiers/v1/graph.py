@@ -247,7 +247,8 @@ _PROVIDER_STATE_FIELDS = frozenset({"encrypted_content", "signature", "data", "p
 
 def message_hash(message: Message) -> str:
     """Stable content hash on the fields that round-trip through a prompt — role, content
-    (None and "" equal), assistant reasoning content when present, assistant tool calls,
+    (None and "" equal), assistant reasoning content when non-empty (a prompt's dialect
+    parse drops an empty one), assistant tool calls,
     opaque continuation state, tool call id. Two messages hash equal iff they're the same
     conversational message, so a re-stated prefix message dedups to one node. The message part
     of the prefix key; salt-free so it is identical across processes and after deserialization."""
@@ -271,7 +272,7 @@ def message_hash(message: Message) -> str:
         add("content_text")
         add(message.content or "")
     if isinstance(message, AssistantMessage):
-        if message.reasoning_content is not None:
+        if message.reasoning_content:
             add("reasoning_content")
             add(message.reasoning_content)
         for item in message.provider_state or []:
