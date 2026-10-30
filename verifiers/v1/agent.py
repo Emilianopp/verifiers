@@ -32,6 +32,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
+from verifiers.v1.memory import RESET, Memory, MemoryInteraction, memory_system_prompt
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
@@ -752,25 +753,47 @@ class Agent:
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         summary: str | None = None,
+        memory: Memory | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn (see `_interaction`). With
         `config.segments`, the exchange runs as a chain of traces under a token
         budget, joined by the model's own summaries (`verifiers.v1.segments`);
         `summary` opens the first segment with a handoff summary from an earlier run
-        (segments only)."""
+        (segments only). With `config.memory`, the model keeps a memory it edits with
+        tags in its replies, across segments (`verifiers.v1.memory`); `memory` is the
+        store to use (a caller that saves and resumes its run owns it), else a new one."""
 
         def open_segment(segment_task: Task):
             return self._interaction(segment_task, runtime=runtime, tools=tools, on_trace=on_trace)
 
-        if self.config.segments is None:
+        segments = self.config.segments
+        if self.config.memory is None:
+            if memory is not None:
+                raise ValueError("a memory needs config.memory")
+        else:
+            config = self.config.memory
+            store = memory if memory is not None else Memory()
+            store.max_key_tokens = config.max_key_tokens
+            task = task.with_data(system_prompt=memory_system_prompt(config, task.data.system_prompt))
+            if segments is not None:
+                segments = segments.model_copy(update={"summary_prompt": f"{segments.summary_prompt} {config.summary_note}"})
+            plain_segment = open_segment
+
+            @asynccontextmanager
+            async def open_segment(segment_task: Task):
+                async with plain_segment(segment_task) as inner:
+                    # A segment that opens on a non-empty memory follows a reset (or resumes a run).
+                    yield MemoryInteraction(inner, store, RESET if store.entries else None, config.turn_note)
+
+        if segments is None:
             if summary is not None:
                 raise ValueError("a handoff summary needs config.segments")
             async with open_segment(task) as interaction:
-                yield interaction
+                yield cast(Interaction, interaction)
             return
         from verifiers.v1.segments import segmented
 
-        async with segmented(self.config.segments, task, open_segment, summary) as interaction:
+        async with segmented(segments, task, open_segment, summary) as interaction:
             yield cast(Interaction, interaction)
 
     @asynccontextmanager
