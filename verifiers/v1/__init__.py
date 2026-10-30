@@ -72,6 +72,9 @@ from verifiers.v1.judges import (
     ReferenceJudgeConfig,
     RubricJudge,
     RubricJudgeConfig,
+    TraceJudge,
+    TraceJudgeConfig,
+    TraceVerdict,
 )
 from verifiers.v1.mcp import (
     SharedToolsetConfig,
@@ -366,6 +369,9 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ReferenceJudgeConfig",
     "RubricJudge",
     "RubricJudgeConfig",
+    "TraceJudge",
+    "TraceJudgeConfig",
+    "TraceVerdict",
     "Criterion",
     # git patch capture
     "PATCH_CAP_BYTES",
