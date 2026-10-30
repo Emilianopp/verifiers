@@ -199,6 +199,49 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     return all(role == "tool" for role in roles)
 
 
+def splice_stored_prefix(
+    stored: list[int],
+    full: RenderedTokens,
+    tail_start: int,
+    stop_ids: set[int],
+) -> RenderedTokens | None:
+    """Continue the stored prefix tokens with a full render's tail, or None.
+
+    A full render re-tokenizes every earlier turn from its messages, which can't reproduce
+    what the model sampled (a different BPE split of the same text, a reply cut off inside
+    its think block, a ``</think>`` without the template's newline). Under a streaming
+    session the engine sees a forked prompt and reopens it. Instead keep `stored` (the
+    engine's tokens for the prompt's first `tail_start` messages) and take from `full`
+    only what follows them: both are anchored at the prefix's last turn-close token (in
+    `full`, the last one before the first token attributed to a tail message), and any
+    scaffolding stored after it must be what `full` renders there too.
+    """
+    ids = full.token_ids
+    if not stored:
+        return None
+    first_tail = next(
+        (j for j, m in enumerate(full.message_indices) if m >= tail_start), len(ids)
+    )
+    i = next((j for j in range(len(stored) - 1, -1, -1) if stored[j] in stop_ids), None)
+    k = next((j for j in range(first_tail - 1, -1, -1) if ids[j] in stop_ids), None)
+    if i is None or k is None:
+        return None
+    trail = stored[i + 1 :]
+    start = k + 1 + len(trail)
+    if start > first_tail or ids[k + 1 : start] != trail:
+        return None
+    n = len(stored)
+    return RenderedTokens(
+        token_ids=stored + ids[start:],
+        message_indices=[-1] * n
+        + [m - tail_start if m >= tail_start else -1 for m in full.message_indices[start:]],
+        sampled_mask=[False] * (n + len(ids) - start),
+        is_content=[False] * n + full.is_content[start:] if full.is_content else [],
+        message_roles=full.message_roles[tail_start:],
+        message_tool_names=full.message_tool_names[tail_start:],
+    )
+
+
 def _has_multimodal_content(messages) -> bool:
     for message in messages:
         content = getattr(message, "content", None)
@@ -439,6 +482,45 @@ class TrainClient(Client):
                 )
                 prompt_ids = rendered.token_ids
                 prompt_attribution = rendered
+                # The bridge couldn't extend the matched prefix; when history thinking is
+                # kept anyway, keep the prefix's stored tokens rather than a re-tokenized
+                # history the engine never saw. (A policy that drops old thinking needs
+                # the re-render.)
+                keeps_history = (
+                    getattr(renderer, "effective_thinking_retention", None) == "all"
+                    or getattr(renderer, "is_prefix_stable", False)
+                )
+                if (
+                    turn is not None
+                    and turn.prefix_node_ids
+                    and process_multimodal
+                    and keeps_history
+                ):
+                    spliced = splice_stored_prefix(
+                        turn.renderer_prefix_ids(),
+                        rendered,
+                        turn.tail_start,
+                        set(renderer.get_stop_token_ids()),
+                    )
+                    if spliced is not None:
+                        prompt_ids = spliced.token_ids
+                        prompt_attribution = spliced
+                        bridged_turn = turn
+                        sampling_params["routed_experts_prompt_start"] = max(
+                            turn.path_len - 1, 0
+                        )
+                    logger.info(
+                        "renderer bridge unavailable (%s) after %d prefix messages; %s",
+                        "invalid tail"
+                        if not can_bridge
+                        else "no sampled anchor"
+                        if previous_ids is None
+                        else "bridge refused",
+                        turn.tail_start,
+                        "kept the stored prefix tokens"
+                        if spliced is not None
+                        else "full re-render",
+                    )
 
             try:
                 result = await generate(

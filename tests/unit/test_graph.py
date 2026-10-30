@@ -779,3 +779,20 @@ def test_eviction_outside_the_resident_prefix_raises(eviction):
             [(0, 2), None, (5, 7)],
             eviction=eviction,
         )
+
+
+def test_an_empty_reply_matches_its_node_when_the_prompt_drops_empty_reasoning():
+    """A reply that stopped at once (``<think>\n<|im_end|>``) commits reasoning_content="";
+    the next prompt's dialect parse drops empty reasoning to None. The prefix must still
+    match through it, or the client re-renders the reply and forks the session."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    user = vf.UserMessage(content="obs 1")
+    graph.prepare_turn(trace, [user]).commit(
+        _response(vf.AssistantMessage(content=None, reasoning_content=""))
+    )
+    replayed = vf.AssistantMessage(content=None, reasoning_content=None)
+    turn = graph.prepare_turn(trace, [user, replayed, vf.UserMessage(content="obs 2")])
+    assert turn.tail_start == 2
