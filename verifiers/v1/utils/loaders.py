@@ -83,7 +83,11 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     name = plugin_id.rsplit("/", 1)[-1].split("@", 1)[0]
     module = name.replace("-", "_").lower()
     namespaced = f"{group}.{module}"
-    target = namespaced if importlib.util.find_spec(namespaced) else module
+    try:
+        builtin = importlib.util.find_spec(namespaced) is not None
+    except ModuleNotFoundError:  # a dotted id (`pkg.module`): no built-in parent package
+        builtin = False
+    target = namespaced if builtin else module
     try:
         return importlib.import_module(target)
     except ModuleNotFoundError as e:
