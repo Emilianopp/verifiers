@@ -8,14 +8,15 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import SegmentsConfig
+from verifiers.v1.agent import Segment as Segment_
 from verifiers.v1.segments import segmented
 
 CONFIG = SegmentsConfig(new_tokens=100, summary_tokens=10, summary_header="HEADER")
 
 
 class FakeSegments:
-    """Opens fake segment interactions; every reply is `replies.pop(0)`, and a turn adds
-    `tokens` to its segment's count."""
+    """Opens fake segment interactions; every reply is `replies.pop(0)` ("content|think:reasoning"),
+    and a turn adds `tokens` to its segment's count."""
 
     def __init__(self, replies: list[str], tokens: int = 0):
         self.replies = replies
@@ -33,7 +34,11 @@ class FakeSegments:
             async def turn(self, message, max_tokens=None):
                 fake.turns.append((message, max_tokens))
                 trace.num_total_tokens += fake.tokens
-                return SimpleNamespace(terminated=False, last_reply=fake.replies.pop(0))
+                reply = fake.replies.pop(0)
+                content, _, reasoning = reply.partition("|think:")
+                return Segment_(
+                    messages=[vf.AssistantMessage(content=content or None, reasoning_content=reasoning or None)]
+                )
 
         interaction = Segment()
         interaction.trace = trace
@@ -63,3 +68,11 @@ async def test_summarize_asks_on_the_current_segment():
     message, max_tokens = fake.turns[-1]
     assert message.startswith("obs 2\n\n") and message.endswith(CONFIG.summary_prompt)
     assert max_tokens == 10
+
+
+@pytest.mark.asyncio
+async def test_a_summary_written_in_the_think_block_is_kept():
+    fake = FakeSegments(["<action>DO</action>", "|think:I should note <summary>wood at (3,4)</summary>"])
+    async with segmented(CONFIG, _task(), fake.open) as interaction:
+        await interaction.turn("obs 1")
+        assert await interaction.summarize("obs 2") == "wood at (3,4)"

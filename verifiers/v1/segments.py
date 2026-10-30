@@ -26,7 +26,7 @@ from verifiers.v1.configs.agent import SegmentsConfig
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages, UserMessage
+from verifiers.v1.types import AssistantMessage, Messages, UserMessage
 
 if TYPE_CHECKING:
     from verifiers.v1.agent import Interaction, Segment
@@ -52,6 +52,19 @@ def _summary_text(reply: str) -> str:
     tag is missing), else the whole reply."""
     match = _SUMMARY.search(reply)
     return (match.group(1) if match else reply).strip()
+
+
+def _segment_summary(segment: Segment) -> str:
+    """The summary a summary turn wrote: from its reply, else from its reasoning. A
+    thinking model often writes the summary in its think block and stops there, leaving
+    an empty reply; that would hand the next segment nothing."""
+    summary = _summary_text(segment.last_reply)
+    if summary or segment.root_reply is not None:
+        return summary
+    for message in reversed(segment.messages):
+        if isinstance(message, AssistantMessage):
+            return _summary_text(message.reasoning_content or "")
+    return ""
 
 
 class SegmentedInteraction:
@@ -106,7 +119,7 @@ class SegmentedInteraction:
         run opens with `segmented(..., summary=...)`."""
         assert self._current is not None
         reply = await self._current.turn(self._ask_for_summary(message), max_tokens=self.config.summary_tokens)
-        return "" if reply.terminated else _summary_text(reply.last_reply)
+        return "" if reply.terminated else _segment_summary(reply)
 
     def _with_summary(self, summary: str) -> Task:
         system = f"{self._task.data.system_prompt or ''}\n\n{self.config.summary_header}\n{summary}".lstrip()
