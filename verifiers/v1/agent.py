@@ -751,21 +751,26 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        summary: str | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn (see `_interaction`). With
         `config.segments`, the exchange runs as a chain of traces under a token
-        budget, joined by the model's own summaries (`verifiers.v1.segments`)."""
+        budget, joined by the model's own summaries (`verifiers.v1.segments`);
+        `summary` opens the first segment with a handoff summary from an earlier run
+        (segments only)."""
 
         def open_segment(segment_task: Task):
             return self._interaction(segment_task, runtime=runtime, tools=tools, on_trace=on_trace)
 
         if self.config.segments is None:
+            if summary is not None:
+                raise ValueError("a handoff summary needs config.segments")
             async with open_segment(task) as interaction:
                 yield interaction
             return
         from verifiers.v1.segments import segmented
 
-        async with segmented(self.config.segments, task, open_segment) as interaction:
+        async with segmented(self.config.segments, task, open_segment, summary) as interaction:
             yield cast(Interaction, interaction)
 
     @asynccontextmanager

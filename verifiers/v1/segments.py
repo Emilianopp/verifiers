@@ -26,7 +26,7 @@ from verifiers.v1.configs.agent import SegmentsConfig
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages, UserMessage
+from verifiers.v1.types import AssistantMessage, Messages, UserMessage
 
 if TYPE_CHECKING:
     from verifiers.v1.agent import Interaction, Segment
@@ -54,10 +54,24 @@ def _summary_text(reply: str) -> str:
     return (match.group(1) if match else reply).strip()
 
 
+def _segment_summary(segment: Segment) -> str:
+    """The summary a summary turn wrote: from its reply, else from its reasoning. A
+    thinking model often writes the summary in its think block and stops there, leaving
+    an empty reply; that would hand the next segment nothing."""
+    summary = _summary_text(segment.last_reply)
+    if summary or segment.root_reply is not None:
+        return summary
+    for message in reversed(segment.messages):
+        if isinstance(message, AssistantMessage):
+            return _summary_text(message.reasoning_content or "")
+    return ""
+
+
 class SegmentedInteraction:
     """`Interaction.turn` and `trace` over a chain of segment interactions."""
 
     def __init__(self, config: SegmentsConfig, task: Task, open_segment: OpenSegment) -> None:
+        # `task` keeps its own system prompt: every segment's summary is added to it.
         self.config = config
         self._task = task
         self._open = open_segment
@@ -98,20 +112,35 @@ class SegmentedInteraction:
             return [*messages[:-1], last.model_copy(update={"content": f"{last.content}\n\n{request}"})]
         return [*messages, UserMessage(content=request)]
 
-    async def _next_segment(self, message: str | Messages) -> None:
+    async def summarize(self, message: str | Messages) -> str:
+        """Ask for a handoff summary now, on the current segment (as a segment switch
+        does, with `message` in view), and return its text ("" if the turn did not run).
+        For a run that stops here and resumes later from its own saved state: the next
+        run opens with `segmented(..., summary=...)`."""
         assert self._current is not None
         reply = await self._current.turn(self._ask_for_summary(message), max_tokens=self.config.summary_tokens)
-        summary = "" if reply.terminated else _summary_text(reply.last_reply)
+        return "" if reply.terminated else _segment_summary(reply)
+
+    def _with_summary(self, summary: str) -> Task:
+        system = f"{self._task.data.system_prompt or ''}\n\n{self.config.summary_header}\n{summary}".lstrip()
+        return self._task.with_data(system_prompt=system, prompt=None)
+
+    async def _next_segment(self, message: str | Messages) -> None:
+        assert self._current is not None
+        summary = await self.summarize(message)
         await self._stack.aclose()  # the segment's rollout finishes: scoring and hooks run
         self._stack = AsyncExitStack()
-        system = f"{self._task.data.system_prompt or ''}\n\n{self.config.summary_header}\n{summary}".lstrip()
-        await self._start(self._task.with_data(system_prompt=system, prompt=None))
+        await self._start(self._with_summary(summary))
 
 
 @asynccontextmanager
-async def segmented(config: SegmentsConfig, task: Task, open_segment: OpenSegment) -> AsyncIterator[SegmentedInteraction]:
+async def segmented(
+    config: SegmentsConfig, task: Task, open_segment: OpenSegment, summary: str | None = None
+) -> AsyncIterator[SegmentedInteraction]:
+    """`summary`: a handoff summary for the first segment (a run resumed from a saved
+    state, see `SegmentedInteraction.summarize`), placed as a segment switch places it."""
     interaction = SegmentedInteraction(config, task, open_segment)
-    await interaction._start(task)
+    await interaction._start(task if summary is None else interaction._with_summary(summary))
     try:
         yield interaction
     except BaseException as e:
