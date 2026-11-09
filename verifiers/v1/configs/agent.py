@@ -63,6 +63,48 @@ class SegmentsConfig(BaseConfig):
         return self
 
 
+class MemoryConfig(BaseConfig):
+    """A memory the model keeps itself across an `interaction()`, segment switches
+    included: named text entries it edits with tags in its replies. See
+    `verifiers.v1.memory`."""
+
+    max_key_tokens: int = Field(4096, gt=0)
+    """Cap on one entry's length, in tokens estimated as characters / 4: an edit that
+    would leave an entry above it and longer than before is not saved."""
+    prompt: str = (
+        "MEMORY\n"
+        "You have a memory that is kept for the whole game, across context resets: named "
+        "entries (keys) of text that you organize however you like. Edit it with tags in your "
+        "reply, after your reasoning and before your action tags (tags inside your reasoning "
+        "are ignored):\n"
+        '  <write key="NAME">text</write> adds text to the end of an entry (creates it if new)\n'
+        '  <rewrite key="NAME">text</rewrite> replaces the whole entry\n'
+        '  <replace key="NAME"><old>exact text</old><new>new text</new></replace> replaces every '
+        "occurrence of the exact text\n"
+        '  <delete key="NAME">exact text</delete> removes that text; <delete key="NAME"/> removes '
+        "the entry\n"
+        '  <read key="NAME"/> shows the entry\'s full text at the top of your next observation\n'
+        "Memory tags do not use up a turn. Every observation starts with a [Memory] line listing "
+        "your keys and their sizes, then the results of your last edits. An entry holds at most "
+        "{max_key_tokens} tokens: once it is full, an edit that makes it longer is not saved; "
+        "free space with rewrite or delete. After a context reset, start by reading the entries "
+        "you need."
+    )
+    """Added to the system prompt; `{max_key_tokens}` is filled in."""
+    summary_note: str = (
+        "Your memory is kept across the reset (its keys are listed at the top of this "
+        "observation), and you may edit it in this reply too. In the summary, say which memory "
+        "entries to read first after the reset."
+    )
+    """Appended to the segments' summary request."""
+    turn_note: str | None = (
+        "You may also edit your memory in this reply (write, rewrite, replace, delete or read "
+        "tags, before any action tags): write down anything you learned that you will need later."
+    )
+    """Appended to every observation, so the reminder is the last thing the model reads
+    (None = no reminder)."""
+
+
 class AgentConfig(BaseConfig):
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The agent's program (None = the taskset's default harness)."""
@@ -89,6 +131,9 @@ class AgentConfig(BaseConfig):
     """Run each `interaction()` as a chain of traces under a token budget, joined by
     the model's own summaries (None = one trace per interaction). Limits apply per
     segment."""
+    memory: MemoryConfig | None = None
+    """A memory the model edits with tags in its replies, kept across segments (None =
+    no memory). See `verifiers.v1.memory`."""
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
