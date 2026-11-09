@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Generic, Literal, cast
+from typing import TYPE_CHECKING, Any, Generic, Literal, cast, get_args
 
 from openai.types.chat.completion_create_params import (
     CompletionCreateParamsNonStreaming,
@@ -114,8 +114,18 @@ ConfigT = TypeVar("ConfigT", bound=JudgeConfig, default=JudgeConfig)
 
 
 def judge_config_cls(cls: type) -> type[JudgeConfig]:
-    """Resolve a judge's config specialization through its MRO, else `JudgeConfig`."""
-    return concrete_type(cls, JudgeConfig) or JudgeConfig
+    """Resolve a judge's config specialization through its MRO, else the default of a
+    still-generic judge's config TypeVar (`TraceJudge` and its unparameterized subclasses
+    get `TraceJudgeConfig`), else `JudgeConfig`."""
+    if found := concrete_type(cls, JudgeConfig):
+        return found
+    for klass in cls.__mro__:
+        for base in getattr(klass, "__orig_bases__", ()):
+            for arg in get_args(base):
+                default = getattr(arg, "__default__", None)
+                if isinstance(default, type) and issubclass(default, JudgeConfig):
+                    return default
+    return JudgeConfig
 
 
 class Judge(Generic[ParsedT, ConfigT]):
